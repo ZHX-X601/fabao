@@ -11,8 +11,15 @@ import axios from 'axios'
 import { ElMessage } from 'element-plus'
 
 // 创建 axios 实例
+// - 开发环境：走 Vite 代理（/api → localhost:8000），无需配置
+// - 生产环境（如 CF Pages 部署）：在构建环境变量中设置 VITE_API_BASE_URL 为后端公网地址，
+//   例如 https://your-backend.example.com（不含 /api/v1 后缀，末尾不带斜杠）
+const baseURL = import.meta.env.VITE_API_BASE_URL
+  ? `${import.meta.env.VITE_API_BASE_URL}/api/v1`
+  : '/api/v1'
+
 const http = axios.create({
-  baseURL: '/api/v1', // 后端接口统一前缀；开发环境经 Vite 代理转发到 localhost:8000
+  baseURL, // 后端接口统一前缀；开发环境经 Vite 代理转发到 localhost:8000
   timeout: 120000 // 请求超时 120 秒（AI 回复可能较慢）
 })
 

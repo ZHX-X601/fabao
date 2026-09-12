@@ -21,8 +21,8 @@ export default defineConfig({
     // 开发环境代理：把 /api 开头的请求转发到本地 FastAPI 后端，避免浏览器跨域限制
     proxy: {
       '/api': {
-        // target: 'http://localhost:8000',
-        target: 'https://954487onpr52.vicp.fun',
+        target: 'http://localhost:8000',
+        // target: 'https://954487onpr52.vicp.fun',
         changeOrigin: true
       }
     }
