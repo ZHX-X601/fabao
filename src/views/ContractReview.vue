@@ -9,7 +9,7 @@
 <script setup>
 import { ref, reactive } from 'vue'
 import { ElMessage } from 'element-plus'
-// 引入图标：上传、危险警告、对勾、信息、重新上传、下载报告、文档勾选
+// 引入图标
 import {
   UploadFilled,
   WarningFilled,
@@ -19,81 +19,34 @@ import {
   Download,
   DocumentChecked
 } from '@element-plus/icons-vue'
+// 引入后端合同审查接口
+import { uploadContract, reviewContract } from '@/api/contract'
+import { useAuth } from '@/composables/useAuth'
+
+const { isLoggedIn } = useAuth()
 
 // 当前页面阶段：upload（上传）/ analyzing（分析中）/ report（报告）
 const phase = ref('upload')
 
-// 已上传的文件名（用于报告头部展示）
+// 已上传的文件名
 const fileName = ref('')
+// 后端返回的合同记录 ID（审查时需要）
+const contractId = ref(null)
 // 分析进度 0-100
 const analyzeProgress = ref(0)
 // 当前分析阶段提示文案
 const analyzeStage = ref('')
 
 /**
- * 风险报告模拟数据（实际项目中应来自后端 AI 审查接口）
+ * 风险报告数据（来自后端审查结果）
  * level：风险等级 high 高风险 / medium 中风险 / low 低风险
  */
 const report = reactive({
-  score: 78, // 综合评分（满分 100）
-  conclusion:
-    '本合同整体框架完整，但存在 2 处高风险条款可能导致您方承担过重责任，建议在签署前与对方协商修改。',
-  // 各等级风险数量
-  counts: { high: 2, medium: 2, low: 1 },
-  risks: [
-    {
-      level: 'high',
-      title: '违约责任严重不对等',
-      clause:
-        '第八条：乙方违约应向甲方支付合同总金额 30% 的违约金；甲方违约的，仅需赔偿乙方实际直接损失。',
-      analysis:
-        '该条款单方面加重了乙方责任，违约金比例过高且甲方违约责任缺失，属于明显不对等条款。根据《民法典》第五百八十五条，约定违约金过分高于实际损失的，违约方可请求法院或仲裁机构予以适当减少。',
-      suggestion:
-        '建议将双方违约金比例统一（如均为合同总金额的 10%-20%），并增加甲方逾期履约时对等的违约责任。'
-    },
-    {
-      level: 'high',
-      title: '争议解决方式约定不利',
-      clause: '第十二条：因本合同产生的一切争议，由甲方所在地人民法院管辖。',
-      analysis:
-        '管辖法院仅约定甲方所在地，一旦发生争议，乙方需赴异地诉讼，维权成本显著增加。',
-      suggestion:
-        '建议修改为"由被告所在地或合同履行地人民法院管辖"，或约定提交中立的仲裁委员会仲裁。'
-    },
-    {
-      level: 'medium',
-      title: '付款时间与方式约定不明',
-      clause: '第五条：甲方应在项目验收合格后及时支付尾款。',
-      analysis:
-        '"及时"未明确具体期限，"验收合格"也未约定验收期限与标准，容易成为甲方拖延付款的借口。',
-      suggestion:
-        '建议明确为"验收合格后 7 个工作日内一次性支付"，并补充"甲方收到验收申请后 5 日内未提出异议视为验收合格"。'
-    },
-    {
-      level: 'medium',
-      title: '知识产权归属存在空白',
-      clause: '合同未对乙方交付成果的知识产权归属、使用许可范围作出约定。',
-      analysis:
-        '委托开发/设计类成果如未约定权属，易在后续使用、二次开发中产生知识产权纠纷。',
-      suggestion:
-        '建议增加条款：明确成果知识产权归属方、使用范围，以及背景知识产权的许可方式。'
-    },
-    {
-      level: 'low',
-      title: '缺少送达条款',
-      clause: '合同首部列明了双方地址，但未约定该地址作为法律文书送达地址。',
-      analysis:
-        '缺少送达地址确认条款，诉讼阶段可能因送达难导致案件周期拉长。',
-      suggestion:
-        '建议补充："双方确认合同载明地址为各类通知及诉讼文书的送达地址，拒收或退回视为送达。"'
-    }
-  ],
-  // 审查中识别出的合规/完善条款，给用户正向反馈
-  passed: [
-    '合同主体信息完整，名称与落款一致',
-    '合同标的、数量、质量标准约定明确',
-    '保密条款内容规范、期限合理'
-  ]
+  score: 0,
+  conclusion: '',
+  counts: { high: 0, medium: 0, low: 0 },
+  risks: [],
+  passed: []
 })
 
 // 分析阶段的提示文案（随进度推进切换）
@@ -109,32 +62,49 @@ const stageTexts = [
 let analyzeTimer = null
 
 /**
- * 文件选择回调（el-upload 设置 :auto-upload="false" 后通过 on-change 触发）
+ * 文件选择回调：上传到后端提取文本，然后开始审查
  * @param {object} uploadFile - Element Plus 上传文件对象
  */
-const handleFileChange = (uploadFile) => {
+const handleFileChange = async (uploadFile) => {
   const file = uploadFile.raw
   if (!file) return
 
-  // 校验文件类型：仅支持常见文档格式
+  // 未登录提示
+  if (!isLoggedIn.value) {
+    ElMessage.warning('请先登录后再使用合同审查')
+    return
+  }
+
+  // 校验文件类型
   const allowedExt = /\.(doc|docx|pdf|txt|wps)$/i
   if (!allowedExt.test(file.name)) {
     ElMessage.error('仅支持 Word、PDF、TXT、WPS 格式的合同文件')
     return
   }
 
-  // 校验文件大小：限制 20MB 以内
+  // 校验文件大小
   if (file.size > 20 * 1024 * 1024) {
     ElMessage.error('文件大小不能超过 20MB')
     return
   }
 
   fileName.value = file.name
-  startAnalyze()
+
+  // 上传文件到后端（后端提取文本并创建审查记录）
+  try {
+    const formData = new FormData()
+    formData.append('file', file)
+    const res = await uploadContract(formData)
+    contractId.value = res.id
+    // 上传成功后开始审查（播放进度动画 + 调用审查接口）
+    startAnalyze()
+  } catch {
+    // 错误已在 http.js 中提示
+  }
 }
 
 /**
- * 开始模拟 AI 分析：进度递增并切换阶段文案，满进度后进入报告页
+ * 开始审查：播放进度动画，进度满后调用后端审查接口
  */
 const startAnalyze = () => {
   phase.value = 'analyzing'
@@ -145,7 +115,6 @@ const startAnalyze = () => {
   analyzeTimer = setInterval(() => {
     analyzeProgress.value += Math.floor(Math.random() * 8) + 4
 
-    // 根据进度区间切换阶段提示
     const idx = Math.min(
       stageTexts.length - 1,
       Math.floor((analyzeProgress.value / 100) * stageTexts.length)
@@ -155,12 +124,33 @@ const startAnalyze = () => {
     if (analyzeProgress.value >= 100) {
       analyzeProgress.value = 100
       clearInterval(analyzeTimer)
-      // 稍作停顿后展示报告，让"100%"被看到
-      setTimeout(() => {
-        phase.value = 'report'
-      }, 500)
+      // 进度满后调用后端审查接口
+      callBackendReview()
     }
   }, 180)
+}
+
+/**
+ * 调用后端合同审查接口，将结果填充到 report
+ */
+const callBackendReview = async () => {
+  try {
+    const res = await reviewContract(contractId.value)
+    const result = res.review_result
+    if (result) {
+      report.score = result.score || 0
+      report.conclusion = result.conclusion || ''
+      report.counts = result.counts || { high: 0, medium: 0, low: 0 }
+      report.risks = result.risks || []
+      report.passed = result.passed || []
+    }
+    // 稍作停顿后展示报告
+    setTimeout(() => {
+      phase.value = 'report'
+    }, 300)
+  } catch {
+    phase.value = 'upload'
+  }
 }
 
 /**
@@ -195,6 +185,7 @@ const handleDownloadReport = () => {
 const resetAll = () => {
   clearInterval(analyzeTimer)
   fileName.value = ''
+  contractId.value = null
   analyzeProgress.value = 0
   phase.value = 'upload'
 }

@@ -17,6 +17,14 @@ export default defineConfig({
     // 开发服务器端口
     port: 5173,
     // 启动后自动在浏览器打开
-    open: true
+    open: true,
+    // 开发环境代理：把 /api 开头的请求转发到本地 FastAPI 后端，避免浏览器跨域限制
+    proxy: {
+      '/api': {
+        // target: 'http://localhost:8000',
+        target: 'https://954487onpr52.vicp.fun',
+        changeOrigin: true
+      }
+    }
   }
 })

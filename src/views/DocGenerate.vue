@@ -8,7 +8,7 @@
 <script setup>
 import { ref, reactive, computed } from 'vue'
 import { ElMessage } from 'element-plus'
-// 引入图标：金钱、公文包、房屋、诉讼票状、上一步、下载、重新生成、文档
+// 引入图标
 import {
   Money,
   Briefcase,
@@ -19,6 +19,11 @@ import {
   RefreshRight,
   Document
 } from '@element-plus/icons-vue'
+// 引入后端文书生成接口
+import { generateDocument as generateDocumentApi, downloadDocument } from '@/api/document'
+import { useAuth } from '@/composables/useAuth'
+
+const { isLoggedIn } = useAuth()
 
 /**
  * 文书类型配置
@@ -124,6 +129,12 @@ const backToType = () => {
  * 第二步：校验必填项后进入第三步并触发生成
  */
 const startGenerate = () => {
+  // 未登录提示
+  if (!isLoggedIn.value) {
+    ElMessage.warning('请先登录后再使用文书生成')
+    return
+  }
+
   // 简单非空校验：所有字段都必须填写
   const emptyField = currentFields.value.find((f) => !formData[f.prop]?.trim())
   if (emptyField) {
@@ -136,26 +147,40 @@ const startGenerate = () => {
 }
 
 /**
- * 第三步：模拟 AI 生成文书的过程（进度条递增，结束后拼接文书全文）
+ * 第三步：播放生成进度动画，进度满后调用后端接口生成文书
  */
 const runGenerate = () => {
-  // 重置生成状态
   generating.value = true
   generateProgress.value = 0
   resultText.value = ''
   clearInterval(progressTimer)
 
-  // 每 60ms 进度增加，模拟生成耗时
   progressTimer = setInterval(() => {
     generateProgress.value += Math.floor(Math.random() * 12) + 6
     if (generateProgress.value >= 100) {
       generateProgress.value = 100
       clearInterval(progressTimer)
-      // 进度满后拼接生成结果
-      resultText.value = buildDocument()
-      generating.value = false
+      // 进度满后调用后端文书生成接口
+      callBackendGenerate()
     }
   }, 120)
+}
+
+/**
+ * 调用后端文书生成接口，获取生成的文书全文
+ */
+const callBackendGenerate = async () => {
+  try {
+    const res = await generateDocumentApi({
+      doc_type: selectedType.value.name,
+      form_data: { ...formData }
+    })
+    resultText.value = res.generated_content
+  } catch {
+    resultText.value = '文书生成失败，请稍后重试。'
+  } finally {
+    generating.value = false
+  }
 }
 
 /**
@@ -317,10 +342,32 @@ const toChineseAmount = (num) => {
 }
 
 /**
- * 下载按钮：演示环境提示接入真实导出能力
+ * 下载文书：调用后端接口生成 Word 文件并触发浏览器下载
  */
-const handleDownload = () => {
-  ElMessage.success('文书已生成，正式环境将在此处下载 Word/PDF 文件')
+const handleDownload = async () => {
+  if (!resultText.value) return
+  try {
+    const blob = await downloadDocument({
+      content: resultText.value,
+      doc_type: selectedType.value?.name || '文书'
+    })
+    // 从响应头中提取文件名（后端通过 Content-Disposition 返回）
+    // 这里直接用类型 + 时间戳命名
+    const timestamp = new Date().toISOString().slice(0, 10)
+    const fileName = `${selectedType.value?.name || '文书'}_${timestamp}.docx`
+    // 创建临时 URL 并触发下载
+    const url = window.URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = fileName
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    window.URL.revokeObjectURL(url)
+    ElMessage.success('文书已下载')
+  } catch {
+    ElMessage.error('下载失败，请稍后重试')
+  }
 }
 
 /**

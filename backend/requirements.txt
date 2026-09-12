@@ -1,0 +1,27 @@
+# ===== Web 框架与服务器 =====
+fastapi==0.115.6            # Web 框架
+uvicorn==0.34.0             # ASGI 服务器
+
+# ===== HTTP 客户端 =====
+httpx==0.28.1               # 异步 HTTP 客户端，用于后端调用 FastGPT 等外部接口
+
+# ===== 数据库 =====
+SQLAlchemy==2.0.36          # ORM（2.0 新式声明式写法）
+alembic==1.14.0             # 数据库迁移工具
+PyMySQL==1.1.1              # MySQL 驱动（纯 Python 实现）
+cryptography==44.0.0        # PyMySQL 认证 / python-jose 加解密依赖
+
+# ===== 数据校验与配置 =====
+pydantic==2.10.4            # 数据校验与序列化（V2）
+pydantic-settings==2.7.0    # 基于 pydantic v2 的环境变量 / .env 配置管理
+email-validator==2.2.0      # pydantic EmailStr 字段校验支持
+
+# ===== 认证与安全 =====
+python-jose[cryptography]==3.3.0  # JWT 生成 / 校验
+passlib==1.7.4              # 密码哈希库
+bcrypt==4.0.1               # bcrypt 算法后端（锁定版本避免 passlib 兼容告警）
+python-multipart==0.0.20    # 文件上传 / 表单解析支持
+
+# ===== 文档解析 =====
+python-docx==1.1.2          # 解析 .docx Word 文档
+PyPDF2==3.0.1               # 解析 .pdf 文档
