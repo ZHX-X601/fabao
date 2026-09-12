@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- 站点图标：深蓝底色 + 金色天平，呼应"法宝"法律主题 -->
+  <rect width="32" height="32" rx="6" fill="#1a3a5c"/>
+  <path d="M16 7v18M10 10h12M11 10l-3 7h6l-3-7zm10 0l-3 7h6l-3-7zM12 25h8"
+        fill="none" stroke="#c9a96e" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

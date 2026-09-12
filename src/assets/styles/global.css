@@ -1,0 +1,76 @@
+/* ============================================================
+   global.css —— 全局样式文件
+   内容：CSS 主题变量、样式重置、通用工具类
+   主色调：深蓝色 #1a3a5c（专业、法律感）
+   点缀色：金色   #c9a96e（高端、权威感）
+   ============================================================ */
+
+/* 定义全局 CSS 变量，便于整站统一换肤 */
+:root {
+  --color-primary: #1a3a5c; /* 主色：深蓝 */
+  --color-primary-light: #2c5680; /* 主色浅蓝（渐变/悬停） */
+  --color-primary-dark: #0f243a; /* 主色深蓝（页脚背景） */
+  --color-gold: #c9a96e; /* 点缀色：金色 */
+  --color-gold-light: #d9be8a; /* 金色高亮（悬停） */
+  --color-text-main: #333333; /* 正文文字颜色 */
+  --color-text-secondary: #8a8f99; /* 次要文字颜色（描述、提示） */
+  --color-bg-light: #f7f9fb; /* 浅灰背景（功能分区） */
+  --color-border: #e8ebef; /* 通用边框颜色 */
+  --header-height: 64px; /* 顶部导航栏高度 */
+  --content-max-width: 1200px; /* 页面内容最大宽度 */
+}
+
+/* ---------- 样式重置 ---------- */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  font-family: 'PingFang SC', 'Microsoft YaHei', 'Helvetica Neue', Helvetica,
+    Arial, sans-serif;
+  font-size: 14px;
+  color: var(--color-text-main);
+  background-color: #ffffff;
+  /* 字体抗锯齿渲染，让文字更清晰 */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* 去掉链接默认下划线，统一颜色由组件控制 */
+a {
+  text-decoration: none;
+  color: inherit;
+}
+
+/* 去掉列表默认样式 */
+ul,
+ol {
+  list-style: none;
+}
+
+/* ---------- 通用工具类 ---------- */
+
+/* 页面内容容器：限制最大宽度并水平居中 */
+.container {
+  width: 100%;
+  max-width: var(--content-max-width);
+  margin: 0 auto;
+  padding: 0 20px;
+}
+
+/* Element Plus 主题色覆盖为主色（按钮、链接等） */
+.el-button--primary {
+  --el-button-bg-color: var(--color-primary);
+  --el-button-border-color: var(--color-primary);
+  --el-button-hover-bg-color: var(--color-primary-light);
+  --el-button-hover-border-color: var(--color-primary-light);
+  --el-button-active-bg-color: var(--color-primary-dark);
+  --el-button-active-border-color: var(--color-primary-dark);
+}
