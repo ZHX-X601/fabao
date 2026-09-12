@@ -29,6 +29,12 @@ const routes = [
     name: 'ContractReview',
     component: () => import('@/views/ContractReview.vue'),
     meta: { title: '合同审查' }
+  },
+  {
+    path: '/about', // 关于页路径
+    name: 'About',
+    component: () => import('@/views/AboutPage.vue'),
+    meta: { title: '关于我们' }
   }
 ]
 

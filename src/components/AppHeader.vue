@@ -12,7 +12,8 @@
 const navLinks = [
   { path: '/ai-consult', label: 'AI法律咨询' },
   { path: '/doc-generate', label: '文书生成' },
-  { path: '/contract-review', label: '合同审查' }
+  { path: '/contract-review', label: '合同审查' },
+  { path: '/about', label: '关于我们' }
 ]
 </script>
 
