@@ -80,7 +80,13 @@ async def review(
         raise NotFoundError("合同记录不存在")
 
     # 调用审查服务，结果为可 JSON 化的字典，直接存 JSON 字段
-    contract.review_result = await review_contract(contract.original_text or "", contract.file_name)
+    # chatId 按"用户 + 合同记录"维度唯一，FastGPT 侧记忆按此隔离
+    contract.review_result = await review_contract(
+        contract.original_text or "",
+        contract.file_name,
+        user_id=current_user.id,
+        contract_id=contract.id,
+    )
     db.commit()
     db.refresh(contract)
     return ok(ContractOut.model_validate(contract))
@@ -98,6 +104,60 @@ def list_contracts(
         .all()
     )
     return ok([ContractOut.model_validate(c) for c in contracts])
+
+
+@router.get("/file/{contract_id}", summary="下载原始合同文件")
+def download_file(
+    contract_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    下载用户上传的原始合同文件（原样返回）
+
+    - 仅本人上传的合同可下载（按 user_id 校验）
+    - 文件按上传时的原始文件名返回（RFC 5987 编码，中文不乱码）
+    """
+    from urllib.parse import quote
+
+    contract = (
+        db.query(Contract)
+        .filter(Contract.id == contract_id, Contract.user_id == current_user.id)
+        .first()
+    )
+    if contract is None:
+        raise NotFoundError("合同记录不存在")
+
+    file_path = Path(contract.file_path)
+    if not file_path.is_file():
+        raise NotFoundError("原始文件已不存在，可能已被清理")
+
+    # 按原始扩展名推断 Content-Type（未知类型统一按二进制流返回）
+    import mimetypes
+
+    media_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
+    encoded_name = quote(contract.file_name)
+
+    def _iter_file():
+        with open(file_path, "rb") as f:
+            while True:
+                chunk = f.read(64 * 1024)
+                if not chunk:
+                    break
+                yield chunk
+
+    return StreamingResponse(
+        _iter_file(),
+        media_type=media_type,
+        headers={
+            "Content-Disposition": (
+                f"attachment; filename=\"contract{file_path.suffix}\"; "
+                f"filename*=UTF-8''{encoded_name}"
+            ),
+            "Content-Length": str(file_path.stat().st_size),
+            "Access-Control-Expose-Headers": "Content-Disposition",
+        },
+    )
 
 
 @router.get("/report/{contract_id}", summary="下载合同审查报告（Word 文档）")

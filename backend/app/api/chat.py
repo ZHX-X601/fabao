@@ -145,7 +145,10 @@ async def send_message(
     ]
 
     # ---------- 3. 调用 AI 服务生成回复 ----------
-    reply_text = await ai_service.generate_reply(history[:-1], body.content)
+    # chatId 按"用户 + 对话"维度唯一：FastGPT 侧的记忆和日志按此隔离，
+    # 不同用户 / 不同对话互不可见（u=用户ID，c=对话ID，前缀区分模块）
+    fastgpt_chat_id = f"fabao-chat-u{current_user.id}-c{conversation.id}"
+    reply_text = await ai_service.generate_reply(history[:-1], body.content, chat_id=fastgpt_chat_id)
 
     # ---------- 4. 保存 AI 回复，刷新对话更新时间 ----------
     assistant_msg = Message(

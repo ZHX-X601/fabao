@@ -9,14 +9,16 @@
     6. 一键清空对话（删除后端对话并重置本地状态）
 -->
 <script setup>
-import { ref, reactive, nextTick, onMounted } from 'vue'
+import { ref, reactive, nextTick, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
-import { Promotion, RefreshLeft, ChatDotRound } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { Promotion, RefreshLeft, ChatDotRound, Plus, Delete } from '@element-plus/icons-vue'
 // 引入后端对话接口
 import {
   createConversation,
   deleteConversation,
+  getConversations,
+  getMessages,
   sendMessage as sendMessageApi
 } from '@/api/chat'
 import { useAuth } from '@/composables/useAuth'
@@ -51,6 +53,106 @@ const isReplying = ref(false)
 const conversationId = ref(null)
 
 const messageListRef = ref(null)
+
+// ========== 历史会话列表 ==========
+// 会话列表（登录后加载）
+const sessions = ref([])
+// 会话列表加载状态
+const sessionsLoading = ref(false)
+
+/** 加载当前用户的历史会话列表 */
+const loadSessions = async () => {
+  if (!isLoggedIn.value) return
+  sessionsLoading.value = true
+  try {
+    sessions.value = await getConversations()
+  } catch {
+    // 静默失败，不影响聊天主流程
+  } finally {
+    sessionsLoading.value = false
+  }
+}
+
+/**
+ * 切换到某个历史会话：加载该会话的全部消息
+ * @param {object} conv - 会话对象 { id, title }
+ */
+const switchSession = async (conv) => {
+  if (isReplying.value) return
+  if (conversationId.value === conv.id) return
+  try {
+    const msgs = await getMessages(conv.id)
+    conversationId.value = conv.id
+    messages.splice(0, messages.length)
+    if (!msgs.length) {
+      messages.push({
+        role: 'ai',
+        isWelcome: true,
+        content: '该对话暂无消息，请问您有什么法律问题需要咨询？',
+        time: currentTime()
+      })
+    } else {
+      for (const m of msgs) {
+        messages.push({
+          role: m.role === 'user' ? 'user' : 'ai',
+          content: m.content || '',
+          time: formatTime(m.created_at)
+        })
+      }
+    }
+    scrollToBottom()
+  } catch {
+    // 错误已在 http.js 中提示
+  }
+}
+
+/**
+ * 删除某个历史会话（带确认）
+ * @param {object} conv - 会话对象
+ */
+const removeSession = async (conv) => {
+  try {
+    await ElMessageBox.confirm(`确定删除对话「${conv.title}」吗？删除后不可恢复。`, '删除对话', {
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+      type: 'warning'
+    })
+  } catch {
+    return // 用户取消
+  }
+  try {
+    await deleteConversation(conv.id)
+    sessions.value = sessions.value.filter((s) => s.id !== conv.id)
+    // 若删的是当前正在进行的对话，重置聊天区
+    if (conversationId.value === conv.id) {
+      startNewChat()
+    }
+    ElMessage.success('对话已删除')
+  } catch {
+    // 错误已在 http.js 中提示
+  }
+}
+
+/**
+ * 开始新对话：清空聊天区，回到欢迎语状态（不删除历史记录）
+ */
+const startNewChat = () => {
+  conversationId.value = null
+  messages.splice(0, messages.length, {
+    role: 'ai',
+    isWelcome: true,
+    content: '您好，我是法宝 AI 法律顾问。我可以为您解答婚姻家庭、劳动纠纷、合同债务、房产交通等方面的法律问题，请描述您遇到的情况。',
+    time: currentTime()
+  })
+}
+
+/** 将后端 ISO 时间格式化为 MM-DD HH:mm（历史消息显示用） */
+function formatTime(iso) {
+  if (!iso) return ''
+  const d = new Date(iso)
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
 
 // 快捷问题配置
 const quickQuestions = [
@@ -114,6 +216,8 @@ const sendMessage = async (text) => {
     const res = await sendMessageApi(conversationId.value, content)
     // 5. 填充 AI 回复内容
     aiMsg.content = res.assistant_message.content
+    // 6. 后台刷新历史会话列表（同步新会话与排序）
+    loadSessions()
   } catch (err) {
     // 请求失败：展示错误信息
     aiMsg.content = '请求失败，请稍后重试。'
@@ -145,10 +249,24 @@ const clearMessages = async () => {
   })
   conversationId.value = null
   ElMessage.success('对话已清空')
+  // 同步刷新侧栏列表
+  loadSessions()
 }
 
-// 页面挂载时：若首页搜索框携带问题则自动发送
+// 监听登录状态变化：登录后立即加载历史会话，登出后清空
+watch(isLoggedIn, (loggedIn) => {
+  if (loggedIn) {
+    loadSessions()
+  } else {
+    sessions.value = []
+    // 登出后重置聊天区（旧用户会话不再保留在界面上）
+    startNewChat()
+  }
+})
+
+// 页面挂载时：加载历史会话列表；若首页搜索框携带问题则自动发送
 onMounted(() => {
+  loadSessions()
   const q = route.query.q
   if (q) {
     setTimeout(() => sendMessage(String(q)), 300)
@@ -166,9 +284,47 @@ onMounted(() => {
       </div>
     </section>
 
-    <!-- 对话主体区域 -->
+    <!-- 对话主体区域：左侧历史会话栏 + 右侧聊天窗 -->
     <section class="container chat-section">
-      <div class="chat-card">
+      <div class="chat-layout">
+        <!-- ========== 左侧：历史会话列表 ========== -->
+        <aside v-if="isLoggedIn" class="session-panel">
+          <div class="session-panel__head">
+            <span class="session-panel__title">历史对话</span>
+            <el-button size="small" :icon="Plus" class="session-new-btn" @click="startNewChat">
+              新对话
+            </el-button>
+          </div>
+
+          <div v-loading="sessionsLoading" class="session-list">
+            <div
+              v-for="conv in sessions"
+              :key="conv.id"
+              class="session-item"
+              :class="{ 'session-item--active': conversationId === conv.id }"
+              @click="switchSession(conv)"
+            >
+              <div class="session-item__body">
+                <p class="session-item__title">{{ conv.title }}</p>
+                <p class="session-item__time">{{ formatTime(conv.updated_at) }}</p>
+              </div>
+              <el-icon
+                class="session-item__del"
+                title="删除对话"
+                @click.stop="removeSession(conv)"
+              >
+                <Delete />
+              </el-icon>
+            </div>
+
+            <p v-if="!sessionsLoading && !sessions.length" class="session-empty">
+              暂无历史对话
+            </p>
+          </div>
+        </aside>
+
+        <!-- ========== 右侧：聊天窗口 ========== -->
+        <div class="chat-card">
         <!-- 对话窗口头部 -->
         <div class="chat-header">
           <div class="chat-header__left">
@@ -254,6 +410,7 @@ onMounted(() => {
         <!-- 底部免责提示 -->
         <p class="chat-tip">AI 回复内容仅供参考，不构成正式法律意见，紧急情况请拨打 12348</p>
       </div>
+      </div>
     </section>
   </div>
 </template>
@@ -285,9 +442,126 @@ onMounted(() => {
   padding: 36px 20px 56px;
 }
 
-.chat-card {
-  max-width: 860px;
+/* 左右布局：历史会话侧栏 + 聊天窗 */
+.chat-layout {
+  display: flex;
+  gap: 20px;
+  max-width: 1120px;
   margin: 0 auto;
+  align-items: stretch;
+}
+
+/* ========== 历史会话侧栏 ========== */
+.session-panel {
+  flex-shrink: 0;
+  width: 240px;
+  background-color: #ffffff;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  box-shadow: 0 6px 20px rgba(26, 58, 92, 0.06);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  align-self: flex-start;
+  max-height: 640px;
+}
+
+.session-panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--color-border);
+  background-color: #fbfcfd;
+}
+
+.session-panel__title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-primary);
+}
+
+.session-new-btn {
+  color: var(--color-gold);
+  border-color: rgba(201, 169, 110, 0.5);
+}
+
+.session-new-btn:hover {
+  color: #ffffff;
+  background-color: var(--color-gold);
+  border-color: var(--color-gold);
+}
+
+.session-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+  min-height: 120px;
+}
+
+.session-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+
+.session-item:hover {
+  background-color: rgba(26, 58, 92, 0.05);
+}
+
+.session-item--active {
+  background-color: rgba(201, 169, 110, 0.14);
+}
+
+.session-item__body {
+  flex: 1;
+  min-width: 0;
+}
+
+.session-item__title {
+  font-size: 13px;
+  color: var(--color-text-main);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-item__time {
+  margin-top: 3px;
+  font-size: 11px;
+  color: #b4b9c0;
+}
+
+.session-item__del {
+  flex-shrink: 0;
+  color: #b4b9c0;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.2s ease, color 0.2s ease;
+}
+
+.session-item:hover .session-item__del {
+  opacity: 1;
+}
+
+.session-item__del:hover {
+  color: #e5533d;
+}
+
+.session-empty {
+  padding: 24px 0;
+  text-align: center;
+  font-size: 12px;
+  color: #b4b9c0;
+}
+
+.chat-card {
+  flex: 1;
+  min-width: 0;
   background-color: #ffffff;
   border-radius: 12px;
   border: 1px solid var(--color-border);
@@ -522,6 +796,16 @@ onMounted(() => {
   .bubble,
   .ai-content {
     max-width: 82%;
+  }
+
+  /* 窄屏：侧栏移到聊天窗上方，横向压缩 */
+  .chat-layout {
+    flex-direction: column;
+  }
+
+  .session-panel {
+    width: 100%;
+    max-height: 180px;
   }
 }
 </style>

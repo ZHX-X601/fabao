@@ -55,7 +55,7 @@ def _mock_reply(user_message: str) -> str:
     )
 
 
-async def generate_reply(history: list[dict], user_message: str) -> str:
+async def generate_reply(history: list[dict], user_message: str, chat_id: str) -> str:
     """
     生成 AI 回复
 
@@ -66,6 +66,9 @@ async def generate_reply(history: list[dict], user_message: str) -> str:
 
     :param history: 当前对话的历史消息，格式 [{"role": "user"/"assistant", "content": "..."}]
     :param user_message: 用户本次发送的消息内容
+    :param chat_id: FastGPT 会话标识（唯一），决定 FastGPT 侧的记忆与日志归属。
+                    必须按"用户 + 对话"维度传入（如 fabao-chat-u{user_id}-c{conversation_id}），
+                    否则不同用户/对话会共用同一份记忆造成串台。长度需 < 250。
     :return: AI 回复文本
     """
     # 未配置 FastGPT Key，直接使用本地模拟
@@ -77,7 +80,7 @@ async def generate_reply(history: list[dict], user_message: str) -> str:
     messages.append({"role": "user", "content": user_message})
 
     payload = {
-        "chatId": "fabao-backend",
+        "chatId": chat_id,
         "stream": False,
         "messages": messages,
     }

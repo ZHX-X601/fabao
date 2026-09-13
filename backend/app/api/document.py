@@ -42,20 +42,28 @@ async def generate(
     """
     提交表单数据生成文书
 
-    流程：调用 FastGPT / 本地模板生成结构化 JSON -> 保存生成记录 -> 返回记录
+    流程：先创建文书记录（拿到主键 ID，供 FastGPT chatId 隔离用）->
+    调用 FastGPT / 本地模板生成结构化 JSON -> 回填记录 -> 返回记录
     generated_content 字段存储的是 JSON 字符串（含 title + sections 数组）
     """
-    doc_data = await generate_document(body.doc_type, body.form_data)
-    # 将结构化 JSON 序列化为字符串存储
-    content_json = json.dumps(doc_data, ensure_ascii=False)
-
+    # 先落库拿主键：chatId 需要用 document.id 做唯一标识（用户 + 记录维度）
     document = Document(
         user_id=current_user.id,
         doc_type=body.doc_type,
         form_data=body.form_data,
-        generated_content=content_json,
+        generated_content="",
     )
     db.add(document)
+    db.commit()
+    db.refresh(document)
+
+    # 生成文书（内部失败会降级到本地模板，不会抛异常）
+    doc_data = await generate_document(
+        body.doc_type, body.form_data,
+        user_id=current_user.id, document_id=document.id,
+    )
+    # 将结构化 JSON 序列化为字符串并回填
+    document.generated_content = json.dumps(doc_data, ensure_ascii=False)
     db.commit()
     db.refresh(document)
     return ok(DocumentOut.model_validate(document))

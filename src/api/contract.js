@@ -33,3 +33,11 @@ export function getContractList() {
 export function downloadContractReport(id) {
   return http.get(`/contracts/report/${id}`, { responseType: 'blob' })
 }
+
+/**
+ * 下载原始合同文件（返回 Blob，按上传时的原文件名）
+ * @param {number} id 合同记录 ID
+ */
+export function downloadContractFile(id) {
+  return http.get(`/contracts/file/${id}`, { responseType: 'blob' })
+}

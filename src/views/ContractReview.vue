@@ -7,7 +7,7 @@
   支持"重新审查"回到上传状态
 -->
 <script setup>
-import { ref, reactive, onBeforeUnmount } from 'vue'
+import { ref, reactive, onBeforeUnmount, onMounted, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 // 引入图标
 import {
@@ -18,10 +18,18 @@ import {
   RefreshLeft,
   Download,
   DocumentChecked,
-  Loading
+  Loading,
+  Clock,
+  View
 } from '@element-plus/icons-vue'
 // 引入后端合同审查接口
-import { uploadContract, reviewContract, downloadContractReport } from '@/api/contract'
+import {
+  uploadContract,
+  reviewContract,
+  downloadContractReport,
+  downloadContractFile,
+  getContractList
+} from '@/api/contract'
 import { useAuth } from '@/composables/useAuth'
 
 const { isLoggedIn } = useAuth()
@@ -155,6 +163,8 @@ const callBackendReview = async () => {
     phase.value = 'upload'
   } finally {
     clearTimers()
+    // 刷新历史列表（新增/更新了审查记录）
+    loadHistory()
   }
 }
 
@@ -246,6 +256,125 @@ const resetAll = () => {
   currentStageIdx.value = 0
   phase.value = 'upload'
 }
+
+// ========== 历史审查记录 ==========
+// 历史审查记录列表（登录后加载）
+const historyList = ref([])
+const historyLoading = ref(false)
+// 正在下载原文件的记录 ID（防重复点击）
+const downloadingFileId = ref(null)
+
+/** 加载当前用户的历史审查记录 */
+const loadHistory = async () => {
+  if (!isLoggedIn.value) return
+  historyLoading.value = true
+  try {
+    historyList.value = await getContractList()
+  } catch {
+    // 静默失败
+  } finally {
+    historyLoading.value = false
+  }
+}
+
+/** 将后端 ISO 时间格式化为 YYYY-MM-DD HH:mm */
+const formatDateTime = (iso) => {
+  if (!iso) return ''
+  const d = new Date(iso)
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+/**
+ * 查看历史审查报告：已有结果的直接进入报告页，未审查的自动执行审查
+ * @param {object} record - 历史记录 { id, file_name, review_result, created_at }
+ */
+const viewHistoryReport = (record) => {
+  fileName.value = record.file_name
+  contractId.value = record.id
+
+  const result = record.review_result
+  if (!result) {
+    // 尚未审查：直接执行审查流程（进入分析动画页）
+    ElMessage.info('该合同尚未审查，正在为您执行审查')
+    startAnalyze()
+    return
+  }
+
+  report.score = result.score || 0
+  report.conclusion = result.conclusion || ''
+  report.counts = result.counts || { high: 0, medium: 0, low: 0 }
+  report.risks = result.risks || []
+  report.passed = result.passed || []
+  phase.value = 'report'
+  ElMessage.success(`已载入 ${formatDateTime(record.created_at)} 的审查记录`)
+}
+
+/**
+ * 下载历史记录的审查报告：先设置当前记录 ID，再复用下载逻辑
+ * @param {object} record - 历史记录
+ */
+const downloadHistoryReport = (record) => {
+  if (!record.review_result) {
+    ElMessage.info('该合同尚未执行审查，暂无报告可下载')
+    return
+  }
+  fileName.value = record.file_name
+  contractId.value = record.id
+  handleDownloadReport()
+}
+
+/**
+ * 下载原始合同文件
+ * @param {object} record - 历史记录
+ */
+const handleDownloadFile = async (record) => {
+  if (downloadingFileId.value) return
+  downloadingFileId.value = record.id
+  try {
+    const blob = await downloadContractFile(record.id)
+    if (!(blob instanceof Blob)) {
+      ElMessage.error('返回数据格式异常，请稍后重试')
+      return
+    }
+    // 从 Content-Disposition 解析原始文件名（后端 RFC 5987 编码）
+    const dispo = (blob && blob._responseHeaders?.['content-disposition']) || ''
+    const utf8Match = dispo.match(/filename\*=UTF-8''([^;]+)/i)
+    let filename = record.file_name || '合同文件'
+    if (utf8Match) {
+      try {
+        filename = decodeURIComponent(utf8Match[1])
+      } catch {
+        // 解析失败用后端记录的文件名
+      }
+    }
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    setTimeout(() => URL.revokeObjectURL(url), 100)
+    ElMessage.success(`文件已下载：${filename}`)
+  } catch (err) {
+    console.error('下载原文件失败：', err)
+  } finally {
+    downloadingFileId.value = null
+  }
+}
+
+// 监听登录状态变化：登录后立即加载历史审查记录，登出后清空
+watch(isLoggedIn, (loggedIn) => {
+  if (loggedIn) {
+    loadHistory()
+  } else {
+    historyList.value = []
+  }
+})
+
+// 审查完成后刷新历史列表
+onMounted(loadHistory)
 </script>
 
 <template>
@@ -297,6 +426,59 @@ const resetAll = () => {
 
         <!-- 示例提示 -->
         <p class="upload-tip">上传合同文件，AI 将逐条识别风险条款并提供修改建议</p>
+
+        <!-- 历史审查记录（登录后显示） -->
+        <div v-if="isLoggedIn" class="history-card" v-loading="historyLoading">
+          <h3 class="history-card__title">
+            <el-icon color="#c9a96e"><Clock /></el-icon>
+            我的审查历史
+          </h3>
+          <p v-if="!historyLoading && !historyList.length" class="history-empty">
+            暂无审查记录，上传的合同与审查报告会自动保存在这里
+          </p>
+          <div v-else class="history-list">
+            <div v-for="record in historyList" :key="record.id" class="history-item">
+              <div class="history-item__info">
+                <el-icon class="history-item__file-icon" :size="18"><DocumentChecked /></el-icon>
+                <span class="history-item__name" :title="record.file_name">
+                  {{ record.file_name }}
+                </span>
+                <el-tag
+                  v-if="record.review_result"
+                  size="small"
+                  :type="record.review_result.score >= 85 ? 'success' : record.review_result.score >= 70 ? 'warning' : 'danger'"
+                >
+                  {{ record.review_result.score }} 分
+                </el-tag>
+                <el-tag v-else size="small" type="info">未审查</el-tag>
+                <span class="history-item__time">{{ formatDateTime(record.created_at) }}</span>
+              </div>
+              <div class="history-item__actions">
+                <el-button size="small" text :icon="View" @click="viewHistoryReport(record)">
+                  查看
+                </el-button>
+                <el-button
+                  size="small"
+                  text
+                  :icon="Download"
+                  :disabled="!record.review_result"
+                  @click="downloadHistoryReport(record)"
+                >
+                  下载报告
+                </el-button>
+                <el-button
+                  size="small"
+                  text
+                  :icon="Download"
+                  :loading="downloadingFileId === record.id"
+                  @click="handleDownloadFile(record)"
+                >
+                  原文件
+                </el-button>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
 
       <!-- ========== 阶段二：分析中（阶段骨架提示） ========== -->
@@ -572,6 +754,88 @@ const resetAll = () => {
   text-align: center;
   font-size: 12px;
   color: #b4b9c0;
+}
+
+/* ========== 历史审查记录卡片 ========== */
+.history-card {
+  margin-top: 28px;
+  text-align: left;
+  border-top: 1px solid var(--color-border);
+  padding-top: 22px;
+}
+
+.history-card__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 16px;
+  color: var(--color-primary);
+  margin-bottom: 14px;
+}
+
+.history-empty {
+  padding: 14px 0;
+  text-align: center;
+  font-size: 13px;
+  color: #b4b9c0;
+}
+
+.history-list {
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.history-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 6px;
+  border-bottom: 1px dashed var(--color-border);
+  transition: background-color 0.2s ease;
+}
+
+.history-item:last-child {
+  border-bottom: none;
+}
+
+.history-item:hover {
+  background-color: rgba(26, 58, 92, 0.03);
+}
+
+.history-item__info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1;
+}
+
+.history-item__file-icon {
+  flex-shrink: 0;
+  color: var(--color-primary);
+}
+
+.history-item__name {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--color-text-main);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 300px;
+}
+
+.history-item__time {
+  font-size: 12px;
+  color: #b4b9c0;
+  white-space: nowrap;
+}
+
+.history-item__actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
 }
 
 /* ========== 分析中卡片（阶段骨架提示） ========== */

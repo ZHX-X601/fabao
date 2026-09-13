@@ -6,7 +6,7 @@
     第三步：AI 生成中（模拟进度）→ 文书预览，支持重新生成与下载
 -->
 <script setup>
-import { ref, reactive, computed, onBeforeUnmount } from 'vue'
+import { ref, reactive, computed, onBeforeUnmount, onMounted, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 // 引入图标
 import {
@@ -19,10 +19,16 @@ import {
   RefreshRight,
   Document,
   Loading,
-  CircleCheckFilled
+  CircleCheckFilled,
+  Clock,
+  View
 } from '@element-plus/icons-vue'
 // 引入后端文书生成接口
-import { generateDocument as generateDocumentApi, downloadDocument } from '@/api/document'
+import {
+  generateDocument as generateDocumentApi,
+  downloadDocument,
+  getDocumentList
+} from '@/api/document'
 import { useAuth } from '@/composables/useAuth'
 
 const { isLoggedIn } = useAuth()
@@ -222,6 +228,8 @@ const callBackendGenerate = async () => {
   } finally {
     generating.value = false
     clearTimers()
+    // 刷新历史列表（新增一条生成记录）
+    loadHistory()
   }
 }
 
@@ -265,6 +273,105 @@ const restart = () => {
   currentStageIdx.value = 0
   activeStep.value = 0
 }
+
+// ========== 历史文书列表 ==========
+// 历史文书记录列表（登录后加载）
+const historyDocs = ref([])
+const historyLoading = ref(false)
+
+/** 加载当前用户的历史文书列表 */
+const loadHistory = async () => {
+  if (!isLoggedIn.value) return
+  historyLoading.value = true
+  try {
+    historyDocs.value = await getDocumentList()
+  } catch {
+    // 静默失败
+  } finally {
+    historyLoading.value = false
+  }
+}
+
+/** 将后端 ISO 时间格式化为 YYYY-MM-DD HH:mm */
+const formatDateTime = (iso) => {
+  if (!iso) return ''
+  const d = new Date(iso)
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+/**
+ * 查看历史文书：解析记录内容并进入预览页
+ * @param {object} record - 历史文书记录 { id, doc_type, generated_content, created_at }
+ */
+const viewHistoryDoc = (record) => {
+  let data
+  try {
+    data = JSON.parse(record.generated_content)
+  } catch {
+    data = {
+      title: record.doc_type,
+      sections: [{ type: 'paragraph', content: record.generated_content || '' }]
+    }
+  }
+  if (!data.title || !Array.isArray(data.sections)) {
+    ElMessage.warning('该记录内容格式异常，无法预览')
+    return
+  }
+  // 匹配文书类型配置（供"重新生成"等功能使用）
+  selectedType.value = docTypes.find((t) => t.name === record.doc_type) || null
+  resultData.value = data
+  activeStep.value = 2
+  ElMessage.success(`已载入 ${formatDateTime(record.created_at)} 生成的文书`)
+}
+
+/**
+ * 下载历史文书：不进入预览页，直接用记录内容生成 docx
+ * @param {object} record - 历史文书记录
+ */
+const downloadHistoryDoc = async (record) => {
+  let data
+  try {
+    data = JSON.parse(record.generated_content)
+  } catch {
+    ElMessage.warning('该记录内容格式异常，无法下载')
+    return
+  }
+  try {
+    const blob = await downloadDocument({
+      doc_data: record.generated_content,
+      doc_type: record.doc_type
+    })
+    if (!(blob instanceof Blob)) {
+      ElMessage.error('返回数据格式异常，请稍后重试')
+      return
+    }
+    const filename = `${record.doc_type}.docx`
+    const url = window.URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = filename
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    setTimeout(() => window.URL.revokeObjectURL(url), 100)
+    ElMessage.success('文书已下载')
+  } catch {
+    ElMessage.error('下载失败，请稍后重试')
+  }
+}
+
+// 监听登录状态变化：登录后立即加载历史文书，登出后清空
+watch(isLoggedIn, (loggedIn) => {
+  if (loggedIn) {
+    loadHistory()
+  } else {
+    historyDocs.value = []
+  }
+})
+
+// 生成完成后刷新历史列表
+onMounted(loadHistory)
 </script>
 
 <template>
@@ -287,19 +394,48 @@ const restart = () => {
       </el-steps>
 
       <!-- 第一步：文书类型选择卡片 -->
-      <div v-if="activeStep === 0" class="type-grid">
-        <div
-          v-for="type in docTypes"
-          :key="type.key"
-          class="type-card"
-          @click="selectType(type)"
-        >
-          <div class="type-card__icon">
-            <el-icon :size="26"><component :is="type.icon" /></el-icon>
+      <div v-if="activeStep === 0" class="type-step">
+        <div class="type-grid">
+          <div
+            v-for="type in docTypes"
+            :key="type.key"
+            class="type-card"
+            @click="selectType(type)"
+          >
+            <div class="type-card__icon">
+              <el-icon :size="26"><component :is="type.icon" /></el-icon>
+            </div>
+            <h3 class="type-card__name">{{ type.name }}</h3>
+            <p class="type-card__desc">{{ type.desc }}</p>
+            <span class="type-card__action">选择并填写 →</span>
           </div>
-          <h3 class="type-card__name">{{ type.name }}</h3>
-          <p class="type-card__desc">{{ type.desc }}</p>
-          <span class="type-card__action">选择并填写 →</span>
+        </div>
+
+        <!-- 历史文书列表（登录后显示） -->
+        <div v-if="isLoggedIn" class="history-card" v-loading="historyLoading">
+          <h3 class="history-card__title">
+            <el-icon color="#c9a96e"><Clock /></el-icon>
+            我的文书历史
+          </h3>
+          <p v-if="!historyLoading && !historyDocs.length" class="history-empty">
+            暂无历史文书，生成的文书会自动保存在这里
+          </p>
+          <div v-else class="history-list">
+            <div v-for="doc in historyDocs" :key="doc.id" class="history-item">
+              <div class="history-item__info">
+                <span class="history-item__type">{{ doc.doc_type }}</span>
+                <span class="history-item__time">{{ formatDateTime(doc.created_at) }}</span>
+              </div>
+              <div class="history-item__actions">
+                <el-button size="small" text :icon="View" @click="viewHistoryDoc(doc)">
+                  查看
+                </el-button>
+                <el-button size="small" text :icon="Download" @click="downloadHistoryDoc(doc)">
+                  下载
+                </el-button>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -539,6 +675,83 @@ const restart = () => {
   font-size: 13px;
   font-weight: 500;
   color: var(--color-gold);
+}
+
+/* ========== 历史文书卡片 ========== */
+.history-card {
+  margin-top: 36px;
+  background-color: #ffffff;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  padding: 24px 28px;
+  box-shadow: 0 6px 20px rgba(26, 58, 92, 0.06);
+}
+
+.history-card__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 16px;
+  color: var(--color-primary);
+  margin-bottom: 16px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.history-empty {
+  padding: 16px 0;
+  text-align: center;
+  font-size: 13px;
+  color: #b4b9c0;
+}
+
+.history-list {
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.history-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 6px;
+  border-bottom: 1px dashed var(--color-border);
+  transition: background-color 0.2s ease;
+}
+
+.history-item:last-child {
+  border-bottom: none;
+}
+
+.history-item:hover {
+  background-color: rgba(26, 58, 92, 0.03);
+}
+
+.history-item__info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.history-item__type {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text-main);
+  white-space: nowrap;
+}
+
+.history-item__time {
+  font-size: 12px;
+  color: #b4b9c0;
+  white-space: nowrap;
+}
+
+.history-item__actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
 }
 
 /* ========== 第二、三步卡片通用 ========== */

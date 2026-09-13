@@ -158,7 +158,7 @@ def _map_fastgpt_result(fastgpt_json: dict, file_name: str) -> dict:
     }
 
 
-async def review_contract(original_text: str, file_name: str) -> dict:
+async def review_contract(original_text: str, file_name: str, user_id: int, contract_id: int) -> dict:
     """
     执行合同审查
 
@@ -167,6 +167,8 @@ async def review_contract(original_text: str, file_name: str) -> dict:
 
     :param original_text: 从上传文件中提取的合同原文
     :param file_name: 合同文件名（用于展示）
+    :param user_id: 当前用户 ID（用于 FastGPT 会话隔离）
+    :param contract_id: 合同记录主键（同一份合同多次审查共用同一 chatId，历史互相关联）
     :return: 审查结果字典
     """
     # 未配置 FastGPT，直接降级
@@ -178,8 +180,10 @@ async def review_contract(original_text: str, file_name: str) -> dict:
         logger.warning("合同原文过短（%d 字符），降级到本地模拟", len(original_text.strip()))
         return _fallback_review(original_text, file_name)
 
+    # chatId 按"用户 + 合同记录"维度唯一（r=contracts 主键，前缀区分模块），
+    # 不同用户 / 不同合同互不可见；同一合同重新审查会带上上次的审查历史
     payload = {
-        "chatId": "fabao-contract-review",
+        "chatId": f"fabao-review-u{user_id}-r{contract_id}",
         "stream": False,
         "messages": [{"role": "user", "content": original_text}],
         "appId": settings.FASTGPT_CONTRACT_APP_ID,

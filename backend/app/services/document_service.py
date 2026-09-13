@@ -415,7 +415,7 @@ def _build_doc_prompt(doc_type: str, form_data: dict) -> str:
     return "\n".join(lines)
 
 
-async def generate_document(doc_type: str, form_data: dict) -> dict:
+async def generate_document(doc_type: str, form_data: dict, user_id: int, document_id: int) -> dict:
     """
     生成法律文书，返回结构化 JSON（title + sections）
 
@@ -424,6 +424,8 @@ async def generate_document(doc_type: str, form_data: dict) -> dict:
 
     :param doc_type: 文书类型（民事起诉状/民事答辩状/律师函/授权委托书）
     :param form_data: 用户填写的表单数据
+    :param user_id: 当前用户 ID（用于 FastGPT 会话隔离）
+    :param document_id: 文书记录主键（先生成记录后调用，保证 chatId 唯一）
     :return: 结构化文书数据 {"title": str, "sections": [...]}
     """
     # 未配置 FastGPT Key，直接使用本地降级
@@ -432,8 +434,10 @@ async def generate_document(doc_type: str, form_data: dict) -> dict:
 
     user_message = _build_doc_prompt(doc_type, form_data)
 
+    # chatId 按"用户 + 文书记录"维度唯一（d=documents 主键，前缀区分模块），
+    # 每次生成对应一条新记录，FastGPT 侧不会累积他人/他次的历史
     payload = {
-        "chatId": f"fabao-doc-{doc_type}",
+        "chatId": f"fabao-doc-u{user_id}-d{document_id}",
         "stream": False,
         "messages": [{"role": "user", "content": user_message}],
         "appId": settings.FASTGPT_DOC_APP_ID,
