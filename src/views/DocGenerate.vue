@@ -1,23 +1,25 @@
 <!--
   DocGenerate.vue —— 文书生成页面
   采用三步式流程（el-steps）：
-    第一步：选择文书类型（借款合同 / 劳动合同 / 租赁合同 / 民事起诉状）
+    第一步：选择文书类型（民事起诉状 / 民事答辩状 / 律师函 / 授权委托书）
     第二步：填写文书关键信息（动态表单，字段随文书类型切换）
-    第三步：AI 生成中（模拟进度）→ 文书预览，支持重新生成与下载（演示提示）
+    第三步：AI 生成中（模拟进度）→ 文书预览，支持重新生成与下载
 -->
 <script setup>
-import { ref, reactive, computed } from 'vue'
+import { ref, reactive, computed, onBeforeUnmount } from 'vue'
 import { ElMessage } from 'element-plus'
 // 引入图标
 import {
-  Money,
-  Briefcase,
-  House,
   Tickets,
+  EditPen,
+  Message,
+  Stamp,
   ArrowLeft,
   Download,
   RefreshRight,
-  Document
+  Document,
+  Loading,
+  CircleCheckFilled
 } from '@element-plus/icons-vue'
 // 引入后端文书生成接口
 import { generateDocument as generateDocumentApi, downloadDocument } from '@/api/document'
@@ -28,61 +30,67 @@ const { isLoggedIn } = useAuth()
 /**
  * 文书类型配置
  * @property {string} key        - 类型唯一标识
- * @property {string} name       - 类型名称
+ * @property {string} name       - 类型名称（与 FastGPT 提示词和后端 DOC_TYPES 一致）
  * @property {string} desc       - 类型说明
  * @property {Component} icon    - 卡片图标
- * @property {Array} fields      - 该类型所需填写的表单字段 { prop,label,type,placeholder }
+ * @property {Array} fields      - 该类型所需填写的表单字段 { prop, label, type, placeholder }
+ *   type: 'input' 单行输入 | 'textarea' 多行输入
  */
 const docTypes = [
-  {
-    key: 'loan',
-    name: '借款合同',
-    desc: '适用于个人/企业间资金借贷',
-    icon: Money,
-    fields: [
-      { prop: 'lender', label: '出借人（甲方）', placeholder: '请输入出借人姓名或单位名称' },
-      { prop: 'borrower', label: '借款人（乙方）', placeholder: '请输入借款人姓名或单位名称' },
-      { prop: 'amount', label: '借款金额（元）', placeholder: '如：50000' },
-      { prop: 'period', label: '借款期限', placeholder: '如：自2026年1月1日至2027年1月1日' },
-      { prop: 'rate', label: '约定年利率（%）', placeholder: '如：4（留空则视为无息）' }
-    ]
-  },
-  {
-    key: 'labor',
-    name: '劳动合同',
-    desc: '用人单位与劳动者签订用工合同',
-    icon: Briefcase,
-    fields: [
-      { prop: 'employer', label: '用人单位（甲方）', placeholder: '请输入单位全称' },
-      { prop: 'worker', label: '劳动者（乙方）', placeholder: '请输入劳动者姓名' },
-      { prop: 'position', label: '工作岗位', placeholder: '如：前端开发工程师' },
-      { prop: 'period', label: '合同期限', placeholder: '如：固定期限三年' },
-      { prop: 'salary', label: '月工资（元）', placeholder: '如：12000' }
-    ]
-  },
-  {
-    key: 'rent',
-    name: '租赁合同',
-    desc: '房屋、设备等租赁事项约定',
-    icon: House,
-    fields: [
-      { prop: 'lessor', label: '出租方（甲方）', placeholder: '请输入出租方姓名或单位名称' },
-      { prop: 'lessee', label: '承租方（乙方）', placeholder: '请输入承租方姓名或单位名称' },
-      { prop: 'target', label: '租赁物及地址', placeholder: '如：某市某区某小区1栋201室' },
-      { prop: 'rent', label: '月租金（元）', placeholder: '如：3500' },
-      { prop: 'period', label: '租赁期限', placeholder: '如：2026年3月1日至2027年3月1日' }
-    ]
-  },
   {
     key: 'complaint',
     name: '民事起诉状',
     desc: '向法院提起民事诉讼的标准文书',
     icon: Tickets,
     fields: [
-      { prop: 'plaintiff', label: '原告信息', placeholder: '姓名、性别、身份证号、住址、联系方式' },
-      { prop: 'defendant', label: '被告信息', placeholder: '姓名/单位名称、住址、联系方式' },
-      { prop: 'claim', label: '诉讼请求', placeholder: '如：1.判令被告偿还借款5万元；2.本案诉讼费由被告承担' },
-      { prop: 'reason', label: '事实与理由', placeholder: '请简要描述纠纷经过' }
+      { prop: 'plaintiff', label: '原告信息', type: 'input', placeholder: '姓名、身份证号、联系电话、住址' },
+      { prop: 'defendant', label: '被告信息', type: 'input', placeholder: '姓名/单位名称、身份证号、住址、联系方式' },
+      { prop: 'claims', label: '诉讼请求', type: 'textarea', placeholder: '如：1.判令被告偿还借款5万元及利息；2.本案诉讼费由被告承担' },
+      { prop: 'facts', label: '事实与理由', type: 'textarea', placeholder: '请简要描述纠纷经过与理由' },
+      { prop: 'evidence', label: '证据清单', type: 'textarea', placeholder: '如：1.借条一份；2.银行转账记录；3.微信聊天截图', required: false },
+      { prop: 'court', label: '此致法院', type: 'input', placeholder: '如：北京市朝阳区人民法院', required: false }
+    ]
+  },
+  {
+    key: 'defense',
+    name: '民事答辩状',
+    desc: '针对起诉状提交的答辩文书',
+    icon: EditPen,
+    fields: [
+      { prop: 'respondent', label: '答辩人信息', type: 'input', placeholder: '姓名、身份证号、联系电话、住址' },
+      { prop: 'opponent', label: '被答辩人信息', type: 'input', placeholder: '姓名/单位名称、住址、联系方式' },
+      { prop: 'opinion', label: '答辩意见', type: 'textarea', placeholder: '如：答辩人不同意原告的全部诉讼请求' },
+      { prop: 'defense_facts', label: '事实与理由', type: 'textarea', placeholder: '请逐条阐述答辩的事实依据和理由' },
+      { prop: 'conclusion', label: '答辩结论', type: 'textarea', placeholder: '如：请求法院依法驳回原告的全部诉讼请求', required: false },
+      { prop: 'court', label: '此致法院', type: 'input', placeholder: '如：北京市朝阳区人民法院', required: false }
+    ]
+  },
+  {
+    key: 'lawyer_letter',
+    name: '律师函',
+    desc: '律师代表委托人发出的正式函件',
+    icon: Message,
+    fields: [
+      { prop: 'recipient', label: '致函对象', type: 'input', placeholder: '如：XX公司法定代表人张三' },
+      { prop: 'lawyer', label: '发函律师', type: 'input', placeholder: '如：李四律师' },
+      { prop: 'law_firm', label: '律师事务所', type: 'input', placeholder: '如：XX律师事务所' },
+      { prop: 'statement', label: '事实陈述', type: 'textarea', placeholder: '请客观描述相关事实经过' },
+      { prop: 'legal_opinion', label: '法律意见', type: 'textarea', placeholder: '如：根据《民法典》相关规定，贵方行为已构成违约' },
+      { prop: 'demand', label: '郑重函告要求', type: 'textarea', placeholder: '如：请贵方在收函后7日内支付全部欠款' },
+      { prop: 'deadline', label: '履行期限', type: 'input', placeholder: '如：收到本函之日起7个工作日内', required: false }
+    ]
+  },
+  {
+    key: 'authorization',
+    name: '授权委托书',
+    desc: '委托他人代为办理法律事务',
+    icon: Stamp,
+    fields: [
+      { prop: 'principal', label: '委托人', type: 'input', placeholder: '姓名/单位名称、身份证号' },
+      { prop: 'agent', label: '受委托人', type: 'input', placeholder: '姓名、身份证号、联系电话' },
+      { prop: 'matter', label: '委托事项', type: 'textarea', placeholder: '如：代为办理XX房屋买卖合同签署及产权过户相关事宜' },
+      { prop: 'authority', label: '代理权限', type: 'input', placeholder: '一般代理 / 特别授权（请注明具体权限）' },
+      { prop: 'valid_period', label: '有效期', type: 'input', placeholder: '如：自2026年1月1日至2026年12月31日' }
     ]
   }
 ]
@@ -95,26 +103,41 @@ const selectedType = ref(null)
 const formData = reactive({})
 // 是否正在生成（控制生成动画与按钮禁用）
 const generating = ref(false)
-// 生成进度百分比
-const generateProgress = ref(0)
-// 生成结果文本
-const resultText = ref('')
-// 生成定时器引用，便于在重新生成前清理
-let progressTimer = null
+// 生成结果：结构化 JSON 对象 {title, sections: [{type, ...}, ...]}
+const resultData = ref(null)
+
+// ========== 阶段骨架提示 ==========
+// 不再用百分比进度条（无法预估等待时间易误判为卡顿），
+// 改用阶段清单 + 当前激活项旋转图标，给用户"系统在分步思考"的连续感受。
+const stageTexts = [
+  '正在理解您提供的案件信息',
+  '正在检索相关法律法规与司法实践',
+  '正在构建文书框架与格式规范',
+  '正在生成文书全文'
+]
+const currentStageIdx = ref(0)
+let stageTimer = null
 
 // 当前文书类型对应的字段列表（供模板动态渲染表单）
 const currentFields = computed(() => selectedType.value?.fields ?? [])
 
+/** 统一清理定时器（避免切换步骤/卸载时还在跑） */
+const clearTimers = () => {
+  if (stageTimer) {
+    clearInterval(stageTimer)
+    stageTimer = null
+  }
+}
+
+onBeforeUnmount(clearTimers)
+
 /**
  * 第一步：点击文书类型卡片，选中并进入第二步
- * @param {object} type - 被点击的文书类型配置对象
  */
 const selectType = (type) => {
   selectedType.value = type
-
   // 清空上一次可能残留的表单数据
   Object.keys(formData).forEach((k) => delete formData[k])
-
   activeStep.value = 1
 }
 
@@ -129,14 +152,15 @@ const backToType = () => {
  * 第二步：校验必填项后进入第三步并触发生成
  */
 const startGenerate = () => {
-  // 未登录提示
   if (!isLoggedIn.value) {
     ElMessage.warning('请先登录后再使用文书生成')
     return
   }
 
-  // 简单非空校验：所有字段都必须填写
-  const emptyField = currentFields.value.find((f) => !formData[f.prop]?.trim())
+  // 校验必填字段（required 未设为 false 的字段）
+  const emptyField = currentFields.value.find(
+    (f) => f.required !== false && !formData[f.prop]?.trim()
+  )
   if (emptyField) {
     ElMessage.warning(`请填写「${emptyField.label}」`)
     return
@@ -147,27 +171,31 @@ const startGenerate = () => {
 }
 
 /**
- * 第三步：播放生成进度动画，进度满后调用后端接口生成文书
+ * 第三步：调用后端生成文书，期间用阶段骨架提示呈现思考过程
+ *
+ * 流程：启动阶段定时器（每 2.5 秒切换到下一阶段，覆盖常见 5-15s 等待窗口） ->
+ * 立即调用真实 API -> 后端返回后清掉定时器、跳转结果页
+ *
+ * 注意：阶段切换不再依赖"百分比"，避免"100% 后卡住"的负面体验
  */
 const runGenerate = () => {
   generating.value = true
-  generateProgress.value = 0
-  resultText.value = ''
-  clearInterval(progressTimer)
+  currentStageIdx.value = 0
+  resultData.value = null
+  clearTimers()
 
-  progressTimer = setInterval(() => {
-    generateProgress.value += Math.floor(Math.random() * 12) + 6
-    if (generateProgress.value >= 100) {
-      generateProgress.value = 100
-      clearInterval(progressTimer)
-      // 进度满后调用后端文书生成接口
-      callBackendGenerate()
+  // 阶段推进定时器（每 2.5 秒切到下一阶段，最后阶段停留直到 API 返回）
+  stageTimer = setInterval(() => {
+    if (currentStageIdx.value < stageTexts.length - 1) {
+      currentStageIdx.value++
     }
-  }, 120)
+  }, 2500)
+
+  callBackendGenerate()
 }
 
 /**
- * 调用后端文书生成接口，获取生成的文书全文
+ * 调用后端文书生成接口，获取结构化 JSON 文书
  */
 const callBackendGenerate = async () => {
   try {
@@ -175,195 +203,52 @@ const callBackendGenerate = async () => {
       doc_type: selectedType.value.name,
       form_data: { ...formData }
     })
-    resultText.value = res.generated_content
+    // 后端返回的 generated_content 是 JSON 字符串，解析为对象
+    const content = res.generated_content
+    if (typeof content === 'string') {
+      try {
+        resultData.value = JSON.parse(content)
+      } catch {
+        // 解析失败，包装为简单 paragraph
+        resultData.value = { title: selectedType.value.name, sections: [{ type: 'paragraph', content }] }
+      }
+    } else if (typeof content === 'object' && content !== null) {
+      resultData.value = content
+    } else {
+      resultData.value = null
+    }
   } catch {
-    resultText.value = '文书生成失败，请稍后重试。'
+    resultData.value = { title: selectedType.value.name, sections: [{ type: 'notice', content: '文书生成失败，请稍后重试。' }] }
   } finally {
     generating.value = false
+    clearTimers()
   }
 }
 
 /**
- * 根据所选文书类型与表单数据拼接完整的模拟文书文本
- * @returns {string} 文书全文
- */
-const buildDocument = () => {
-  const d = formData
-  // 当天日期，作为文书落款日期（演示用）
-  const today = new Date().toLocaleDateString('zh-CN', {
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric'
-  })
-
-  // 按类型分别生成文书模板
-  switch (selectedType.value.key) {
-    case 'loan':
-      return `借款合同
-
-甲方（出借人）：${d.lender}
-乙方（借款人）：${d.borrower}
-
-一、借款金额
-乙方向甲方借款人民币（大写）${toChineseAmount(d.amount)}元整（￥${d.amount}元）。
-
-二、借款期限
-${d.period}。
-
-三、借款利息
-${d.rate ? `双方约定借款年利率为 ${d.rate}%，利随本清。` : '本借款为无息借款。'}
-
-四、还款方式
-乙方应于借款到期日一次性向甲方归还全部借款本金及利息。
-
-五、违约责任
-乙方未按期还款的，应按逾期金额每日万分之五向甲方支付违约金。
-
-六、争议解决
-本合同履行过程中发生争议，双方应协商解决；协商不成的，可向甲方所在地人民法院提起诉讼。
-
-七、其他
-本合同一式两份，甲乙双方各执一份，自双方签字（盖章）之日起生效。
-
-甲方（签字/盖章）：                    乙方（签字/盖章）：
-
-日期：${today}`
-
-    case 'labor':
-      return `劳动合同
-
-甲方（用人单位）：${d.employer}
-乙方（劳动者）：${d.worker}
-
-根据《中华人民共和国劳动合同法》及相关法律法规，甲乙双方在平等自愿、协商一致的基础上，签订本合同。
-
-一、合同期限
-${d.period}。
-
-二、工作岗位与内容
-乙方同意根据甲方工作需要，担任${d.position}岗位工作，应按时、保质完成工作任务。
-
-三、劳动报酬
-甲方每月以货币形式向乙方支付工资，月工资标准为人民币${d.salary}元，于每月15日前发放。
-
-四、工作时间与休息休假
-甲方安排乙方执行标准工时制度，乙方依法享有法定节假日、年休假等休息权利。
-
-五、社会保险
-甲方依法为乙方缴纳基本养老、医疗、失业、工伤、生育保险及住房公积金。
-
-六、合同的解除与终止
-双方解除、终止劳动合同应依照《劳动合同法》的规定执行，符合条件的甲方应支付经济补偿。
-
-七、争议解决
-因履行本合同发生争议，可向劳动争议仲裁委员会申请仲裁。
-
-甲方（盖章）：                          乙方（签字）：
-
-日期：${today}`
-
-    case 'rent':
-      return `租赁合同
-
-甲方（出租方）：${d.lessor}
-乙方（承租方）：${d.lessee}
-
-根据《中华人民共和国民法典》及相关规定，双方就租赁事宜达成如下协议：
-
-一、租赁物
-甲方将位于${d.target}的房屋/设施出租给乙方使用。
-
-二、租赁期限
-${d.period}。
-
-三、租金及支付方式
-月租金为人民币${d.rent}元，乙方按【月/季】提前支付，首期租金于交付租赁物之日支付。
-
-四、押金
-乙方于签约时向甲方支付相当于一个月租金的押金，租赁期满且乙方无违约的，甲方全额无息退还。
-
-五、双方权利义务
-甲方保证租赁物权属清晰、可正常使用；乙方应合理使用租赁物，不得擅自转租或改变用途。
-
-六、违约责任
-任何一方违约，应向守约方支付相当于一个月租金的违约金；造成损失的，还应承担赔偿责任。
-
-七、争议解决
-协商不成的，可向租赁物所在地人民法院起诉。
-
-甲方（签字/盖章）：                    乙方（签字/盖章）：
-
-日期：${today}`
-
-    default:
-      return `民事起诉状
-
-原告：${d.plaintiff}
-
-被告：${d.defendant}
-
-诉讼请求：
-${d.claim}
-
-事实与理由：
-${d.reason}
-
-综上所述，被告的行为已严重损害原告的合法权益。为维护自身合法权益，原告依据《中华人民共和国民事诉讼法》的相关规定，特向贵院提起诉讼，恳请依法判如所请。
-
-此致
-XXXX人民法院
-
-具状人（签名）：
-
-${today}`
-  }
-}
-
-/**
- * 简易金额数字转中文大写（仅做演示，实际项目请使用专业库）
- * @param {string|number} num - 金额数字
- * @returns {string} 中文大写金额
- */
-const toChineseAmount = (num) => {
-  const n = Number(num)
-  if (!n) return '零'
-  const digits = ['零', '壹', '贰', '叁', '肆', '伍', '陆', '柒', '捌', '玖']
-  const units = ['', '拾', '佰', '仟', '万', '拾', '佰', '仟', '亿']
-  const intPart = Math.floor(n)
-  const str = String(intPart)
-  let result = ''
-  for (let i = 0; i < str.length; i++) {
-    const digit = Number(str[i])
-    const unit = units[str.length - 1 - i]
-    result += digit === 0 ? digits[0] : digits[digit] + unit
-  }
-  // 简单去重连续的"零"
-  return result.replace(/零+/g, '零').replace(/零$/, '')
-}
-
-/**
- * 下载文书：调用后端接口生成 Word 文件并触发浏览器下载
+ * 下载文书：将结构化 JSON 传给后端，后端按 section type 确定性排版生成 docx
  */
 const handleDownload = async () => {
-  if (!resultText.value) return
+  if (!resultData.value) return
   try {
     const blob = await downloadDocument({
-      content: resultText.value,
+      doc_data: JSON.stringify(resultData.value),
       doc_type: selectedType.value?.name || '文书'
     })
-    // 从响应头中提取文件名（后端通过 Content-Disposition 返回）
-    // 这里直接用类型 + 时间戳命名
-    const timestamp = new Date().toISOString().slice(0, 10)
-    const fileName = `${selectedType.value?.name || '文书'}_${timestamp}.docx`
-    // 创建临时 URL 并触发下载
+    if (!(blob instanceof Blob)) {
+      ElMessage.error('返回数据格式异常，请稍后重试')
+      return
+    }
+
+    const filename = `${selectedType.value?.name || '文书'}.docx`
     const url = window.URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = url
-    link.download = fileName
+    link.download = filename
     document.body.appendChild(link)
     link.click()
     document.body.removeChild(link)
-    window.URL.revokeObjectURL(url)
+    setTimeout(() => window.URL.revokeObjectURL(url), 100)
     ElMessage.success('文书已下载')
   } catch {
     ElMessage.error('下载失败，请稍后重试')
@@ -374,10 +259,10 @@ const handleDownload = async () => {
  * 重新填写：回到第一步
  */
 const restart = () => {
-  clearInterval(progressTimer)
+  clearTimers()
   selectedType.value = null
-  resultText.value = ''
-  generateProgress.value = 0
+  resultData.value = null
+  currentStageIdx.value = 0
   activeStep.value = 0
 }
 </script>
@@ -388,7 +273,7 @@ const restart = () => {
     <section class="page-hero">
       <div class="container">
         <h1 class="page-hero__title">智能文书生成</h1>
-        <p class="page-hero__desc">三步生成规范法律文书 · 涵盖合同、诉讼等常用场景</p>
+        <p class="page-hero__desc">三步生成规范法律文书 · AI 起草 · 涵盖诉讼、函件、委托等场景</p>
       </div>
     </section>
 
@@ -409,7 +294,6 @@ const restart = () => {
           class="type-card"
           @click="selectType(type)"
         >
-          <!-- 图标外框 -->
           <div class="type-card__icon">
             <el-icon :size="26"><component :is="type.icon" /></el-icon>
           </div>
@@ -430,17 +314,24 @@ const restart = () => {
           <el-form-item
             v-for="field in currentFields"
             :key="field.prop"
-            :label="field.label"
+            :label="field.label + (field.required === false ? '（选填）' : '')"
           >
             <el-input
+              v-if="field.type !== 'textarea'"
               v-model="formData[field.prop]"
               :placeholder="field.placeholder"
               clearable
             />
+            <el-input
+              v-else
+              v-model="formData[field.prop]"
+              type="textarea"
+              :rows="3"
+              :placeholder="field.placeholder"
+            />
           </el-form-item>
         </el-form>
 
-        <!-- 表单操作按钮 -->
         <div class="form-actions">
           <el-button :icon="ArrowLeft" @click="backToType">上一步</el-button>
           <el-button type="primary" class="gold-btn" @click="startGenerate">
@@ -451,19 +342,50 @@ const restart = () => {
 
       <!-- 第三步：生成中 / 结果预览 -->
       <div v-else class="result-card">
-        <!-- 生成中：进度条 + 提示 -->
+        <!-- 生成中：阶段骨架提示（不用百分比进度条，避免"100% 后卡住"误判） -->
         <div v-if="generating" class="generating">
-          <el-icon :size="40" color="#c9a96e" class="generating__icon">
-            <RefreshRight />
-          </el-icon>
-          <p class="generating__text">AI 正在为您生成《{{ selectedType.name }}》...</p>
-          <el-progress
-            :percentage="generateProgress"
-            :stroke-width="10"
-            color="#c9a96e"
-            class="generating__bar"
-          />
-          <p class="generating__tips">正在匹配标准条款库、校验法律要素</p>
+          <div class="generating__spinner">
+            <div class="generating__spinner-ring"></div>
+            <el-icon :size="32" color="#c9a96e">
+              <Document />
+            </el-icon>
+          </div>
+          <p class="generating__title">AI 正在为您生成《{{ selectedType.name }}》</p>
+
+          <!-- 阶段清单：已完成 / 进行中 / 待办 三态 -->
+          <div class="generating__stages">
+            <div
+              v-for="(stage, idx) in stageTexts"
+              :key="idx"
+              class="stage-item"
+              :class="{
+                'stage-item--done': idx < currentStageIdx,
+                'stage-item--active': idx === currentStageIdx,
+                'stage-item--pending': idx > currentStageIdx
+              }"
+            >
+              <span class="stage-item__icon-wrap">
+                <el-icon
+                  v-if="idx < currentStageIdx"
+                  class="stage-item__icon"
+                  color="#52a86b"
+                >
+                  <CircleCheckFilled />
+                </el-icon>
+                <el-icon
+                  v-else-if="idx === currentStageIdx"
+                  class="stage-item__icon stage-item__icon--loading"
+                  color="#c9a96e"
+                >
+                  <Loading />
+                </el-icon>
+                <span v-else class="stage-item__dot"></span>
+              </span>
+              <span class="stage-item__text">{{ stage }}</span>
+            </div>
+          </div>
+
+          <p class="generating__tips">复杂文书生成约需 5-15 秒，请耐心等候</p>
         </div>
 
         <!-- 生成完成：文书预览 -->
@@ -476,10 +398,44 @@ const restart = () => {
             <el-tag type="success" size="large" effect="light">生成成功</el-tag>
           </div>
 
-          <!-- 文书正文预览（pre 保留换行与空格） -->
-          <div class="doc-preview">{{ resultText }}</div>
+          <div class="doc-preview">
+            <!-- 标题 -->
+            <div class="doc-preview__title">{{ resultData.title }}</div>
+            <!-- sections 渲染 -->
+            <template v-for="(sec, idx) in resultData.sections" :key="idx">
+              <!-- 当事人信息：标签加粗 -->
+              <div v-if="sec.type === 'party'" class="doc-preview__party">
+                <strong>{{ sec.role }}：</strong>{{ sec.content }}
+              </div>
+              <!-- 节标题 -->
+              <div v-else-if="sec.type === 'heading'" class="doc-preview__heading">
+                {{ sec.content }}
+              </div>
+              <!-- 编号列表项 -->
+              <div v-else-if="sec.type === 'numbered'" class="doc-preview__numbered">
+                <strong>{{ sec.number }}、</strong>{{ sec.content }}
+              </div>
+              <!-- 正文段落 -->
+              <div v-else-if="sec.type === 'paragraph'" class="doc-preview__paragraph">
+                {{ sec.content }}
+              </div>
+              <!-- 居中行 -->
+              <div v-else-if="sec.type === 'center'" class="doc-preview__center" :class="{ 'doc-preview__center--bold': sec.bold }">
+                {{ sec.content }}
+              </div>
+              <!-- 落款 -->
+              <div v-else-if="sec.type === 'signature'" class="doc-preview__signature">
+                {{ sec.content }}
+              </div>
+              <!-- 空行 -->
+              <div v-else-if="sec.type === 'blank'" class="doc-preview__blank"></div>
+              <!-- 提示信息 -->
+              <div v-else-if="sec.type === 'notice'" class="doc-preview__notice">
+                {{ sec.content }}
+              </div>
+            </template>
+          </div>
 
-          <!-- 预览操作按钮 -->
           <div class="result-actions">
             <el-button :icon="RefreshRight" @click="runGenerate">重新生成</el-button>
             <el-button :icon="ArrowLeft" @click="backToType">修改信息</el-button>
@@ -526,7 +482,6 @@ const restart = () => {
   max-width: 1000px;
 }
 
-/* 步骤条整体留白 */
 .doc-steps {
   margin-bottom: 40px;
 }
@@ -548,7 +503,6 @@ const restart = () => {
   transition: transform 0.25s ease, box-shadow 0.25s ease, border-color 0.25s ease;
 }
 
-/* 悬停上浮 + 金色描边 */
 .type-card:hover {
   transform: translateY(-5px);
   border-color: var(--color-gold);
@@ -597,7 +551,6 @@ const restart = () => {
   box-shadow: 0 6px 20px rgba(26, 58, 92, 0.06);
 }
 
-/* 表单标题 */
 .form-card__title {
   display: flex;
   align-items: center;
@@ -616,7 +569,11 @@ const restart = () => {
   column-gap: 24px;
 }
 
-/* 按钮区右对齐 */
+/* textarea 占满整行 */
+.doc-form :deep(.el-form-item:has(textarea)) {
+  grid-column: 1 / -1;
+}
+
 .form-actions,
 .result-actions {
   display: flex;
@@ -629,7 +586,6 @@ const restart = () => {
   justify-content: flex-end;
 }
 
-/* 金色主按钮（与首页 CTA 风格统一） */
 .gold-btn {
   background-color: var(--color-gold);
   border-color: var(--color-gold);
@@ -641,41 +597,117 @@ const restart = () => {
   border-color: var(--color-gold-light);
 }
 
-/* ========== 生成中状态 ========== */
+/* ========== 生成中状态（阶段骨架提示） ========== */
 .generating {
   text-align: center;
   padding: 48px 0;
 }
 
-/* 旋转动画图标 */
-.generating__icon {
-  animation: spin 1.4s linear infinite;
+/* 双层环形旋转图标：外圈旋转 + 中心静态图标 */
+.generating__spinner {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  margin: 0 auto 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.generating__spinner-ring {
+  position: absolute;
+  inset: 0;
+  border: 3px solid transparent;
+  border-top-color: #c9a96e;
+  border-right-color: rgba(201, 169, 110, 0.5);
+  border-radius: 50%;
+  animation: spin 1.1s linear infinite;
 }
 
 @keyframes spin {
-  from {
-    transform: rotate(0deg);
-  }
-  to {
-    transform: rotate(360deg);
-  }
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 
-.generating__text {
-  margin: 20px 0 24px;
+.generating__title {
+  margin: 0 0 28px;
   font-size: 16px;
   font-weight: 600;
   color: var(--color-primary);
 }
 
-.generating__bar {
-  max-width: 420px;
+/* 阶段清单 */
+.generating__stages {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-width: 380px;
   margin: 0 auto;
+  padding: 22px 26px;
+  background-color: #fcfbf7;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  text-align: left;
+}
+
+.stage-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  transition: opacity 0.3s ease, color 0.3s ease;
+}
+
+/* 待办阶段：置灰、降低存在感 */
+.stage-item--pending {
+  opacity: 0.45;
+}
+
+/* 进行中：加粗、强调颜色 */
+.stage-item--active .stage-item__text {
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+/* 已完成：默认绿色对勾 */
+.stage-item__icon {
+  font-size: 18px;
+}
+
+/* 进行中图标：旋转动画 */
+.stage-item__icon--loading {
+  animation: spin 1.4s linear infinite;
+}
+
+/* 待办阶段的小圆点占位 */
+.stage-item__icon-wrap {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.stage-item__dot {
+  width: 8px;
+  height: 8px;
+  background-color: #c8d3de;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.stage-item__text {
+  font-size: 14px;
+  color: var(--color-text-main);
+}
+
+.stage-item--pending .stage-item__text {
+  color: #909399;
 }
 
 .generating__tips {
-  margin-top: 14px;
-  font-size: 13px;
+  margin-top: 22px;
+  font-size: 12px;
   color: var(--color-text-secondary);
 }
 
@@ -700,20 +732,77 @@ const restart = () => {
   color: var(--color-text-secondary);
 }
 
-/* 文书预览区域：仿纸张样式 */
 .doc-preview {
-  background-color: #fcfbf7; /* 轻微泛黄纸张色 */
+  background-color: #fcfbf7;
   border: 1px solid var(--color-border);
   border-radius: 8px;
   padding: 36px 40px;
   font-size: 14px;
-  line-height: 2.1;
+  line-height: 2;
   color: #2b2b2b;
-  white-space: pre-wrap; /* 保留换行和连续空格 */
   max-height: 460px;
   overflow-y: auto;
-  /* 使用衬线字体增强正式文书的阅读感 */
   font-family: 'SimSun', 'Songti SC', serif;
+}
+
+.doc-preview__title {
+  text-align: center;
+  font-size: 22px;
+  font-weight: 700;
+  color: #1a3a5c;
+  margin-bottom: 24px;
+  font-family: 'Microsoft YaHei', sans-serif;
+}
+
+.doc-preview__party {
+  text-indent: 2em;
+  margin-bottom: 4px;
+}
+
+.doc-preview__heading {
+  font-size: 15px;
+  font-weight: 700;
+  color: #1a3a5c;
+  margin-top: 14px;
+  margin-bottom: 8px;
+  font-family: 'Microsoft YaHei', sans-serif;
+}
+
+.doc-preview__numbered {
+  text-indent: 2em;
+  margin-bottom: 4px;
+}
+
+.doc-preview__paragraph {
+  text-indent: 2em;
+  margin-bottom: 4px;
+}
+
+.doc-preview__center {
+  text-align: center;
+  margin-bottom: 4px;
+}
+
+.doc-preview__center--bold {
+  font-weight: 700;
+}
+
+.doc-preview__signature {
+  text-align: right;
+  margin-top: 6px;
+  margin-bottom: 4px;
+}
+
+.doc-preview__blank {
+  height: 1em;
+}
+
+.doc-preview__notice {
+  text-indent: 2em;
+  font-style: italic;
+  color: #6b6b6b;
+  font-size: 13px;
+  margin-top: 12px;
 }
 
 .result-actions {
@@ -731,7 +820,7 @@ const restart = () => {
 @media (max-width: 720px) {
   .type-grid,
   .doc-form {
-    grid-template-columns: 1fr; /* 窄屏单列 */
+    grid-template-columns: 1fr;
   }
 
   .form-card,

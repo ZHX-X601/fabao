@@ -1,5 +1,6 @@
 """
-文件读取工具：解析上传的 .docx / .pdf 合同文件并提取纯文本
+文件读取工具：解析上传的合同文件并提取纯文本
+支持格式：.docx / .pdf / .txt / .doc / .wps
 """
 
 import os
@@ -10,7 +11,7 @@ from docx import Document as DocxDocument
 from app.core.exceptions import BadRequestError
 
 # 允许上传的文件后缀
-ALLOWED_SUFFIXES = {".docx", ".pdf"}
+ALLOWED_SUFFIXES = {".docx", ".pdf", ".txt", ".doc", ".wps"}
 
 
 def check_file_suffix(file_name: str) -> str:
@@ -23,7 +24,7 @@ def check_file_suffix(file_name: str) -> str:
     """
     suffix = os.path.splitext(file_name)[1].lower()
     if suffix not in ALLOWED_SUFFIXES:
-        raise BadRequestError("仅支持 .docx 或 .pdf 格式的合同文件")
+        raise BadRequestError("仅支持 .docx / .pdf / .txt / .doc / .wps 格式的合同文件")
     return suffix
 
 
@@ -71,6 +72,21 @@ def extract_text_from_pdf(file_path: str) -> str:
         raise BadRequestError(f"PDF 文件解析失败：{exc}") from exc
 
 
+def extract_text_from_txt(file_path: str) -> str:
+    """
+    从纯文本文件（.txt / .wps）中读取内容
+
+    优先 UTF-8，失败则尝试 GBK（兼容 Windows 记事本默认编码）
+    """
+    for encoding in ("utf-8", "gbk", "latin-1"):
+        try:
+            with open(file_path, "r", encoding=encoding) as f:
+                return f.read().strip()
+        except (UnicodeDecodeError, UnicodeError):
+            continue
+    raise BadRequestError("文本文件编码无法识别，请使用 UTF-8 或 GBK 编码保存后重试")
+
+
 def extract_text(file_path: str, file_name: str) -> str:
     """
     文件解析统一入口：根据后缀分发到对应解析器
@@ -82,8 +98,13 @@ def extract_text(file_path: str, file_name: str) -> str:
     suffix = check_file_suffix(file_name)
     if suffix == ".docx":
         text = extract_text_from_docx(file_path)
-    else:
+    elif suffix == ".pdf":
         text = extract_text_from_pdf(file_path)
+    elif suffix in (".txt", ".wps"):
+        text = extract_text_from_txt(file_path)
+    else:
+        # .doc 等旧格式暂不支持提取，提示用户转为 .docx
+        raise BadRequestError(f"暂不支持 .{suffix.lstrip('.')} 格式的文件解析，请转为 .docx 或 .pdf 后上传")
 
     # 文本过短视为无效合同文件，提示用户
     if not text or len(text.strip()) < 20:

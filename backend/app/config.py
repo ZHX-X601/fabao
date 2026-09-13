@@ -17,9 +17,10 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 class Settings(BaseSettings):
     """应用配置类：字段名与环境变量名一一对应（不区分大小写）"""
 
-    # 告诉 pydantic-settings 从当前工作目录的 .env 文件读取配置
+    # 告诉 pydantic-settings 从 backend/.env 读取配置
+    # 用绝对路径，避免从其他目录启动 uvicorn 时读不到 .env 而回退到默认值
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=str(BASE_DIR / ".env"),
         env_file_encoding="utf-8",
         extra="ignore",  # 忽略 .env 中多余的环境变量，避免启动报错
     )
@@ -50,13 +51,17 @@ class Settings(BaseSettings):
     # 允许携带跨域凭证的前端来源列表
     CORS_ORIGINS: list[str] = ["http://localhost:5173", "http://localhost:5174"]
 
-    # ---------- FastGPT 配置（AI 咨询调用）----------
+    # ---------- FastGPT 配置 ----------
     # FastGPT 服务地址（后端直接调用，不走前端代理）
     FASTGPT_BASE_URL: str = "http://localhost:3000/api"
-    # FastGPT 应用专属 API Key
+    # FastGPT 应用专属 API Key（三个模块共用）
     FASTGPT_API_KEY: str = ""
-    # FastGPT 应用 ID（部分版本需在请求体中携带）
+    # AI 法律咨询应用 ID
     FASTGPT_APP_ID: str = ""
+    # 文书生成应用 ID
+    FASTGPT_DOC_APP_ID: str = ""
+    # 合同审查应用 ID
+    FASTGPT_CONTRACT_APP_ID: str = ""
 
     @property
     def DATABASE_URL(self) -> str:

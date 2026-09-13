@@ -7,7 +7,7 @@
   支持"重新审查"回到上传状态
 -->
 <script setup>
-import { ref, reactive } from 'vue'
+import { ref, reactive, onBeforeUnmount } from 'vue'
 import { ElMessage } from 'element-plus'
 // 引入图标
 import {
@@ -17,10 +17,11 @@ import {
   InfoFilled,
   RefreshLeft,
   Download,
-  DocumentChecked
+  DocumentChecked,
+  Loading
 } from '@element-plus/icons-vue'
 // 引入后端合同审查接口
-import { uploadContract, reviewContract } from '@/api/contract'
+import { uploadContract, reviewContract, downloadContractReport } from '@/api/contract'
 import { useAuth } from '@/composables/useAuth'
 
 const { isLoggedIn } = useAuth()
@@ -32,10 +33,8 @@ const phase = ref('upload')
 const fileName = ref('')
 // 后端返回的合同记录 ID（审查时需要）
 const contractId = ref(null)
-// 分析进度 0-100
-const analyzeProgress = ref(0)
-// 当前分析阶段提示文案
-const analyzeStage = ref('')
+// 下载状态：'idle' | 'downloading'
+const downloading = ref(false)
 
 /**
  * 风险报告数据（来自后端审查结果）
@@ -49,17 +48,28 @@ const report = reactive({
   passed: []
 })
 
-// 分析阶段的提示文案（随进度推进切换）
+// ========== 阶段骨架提示 ==========
+// 不再用百分比进度条（无法预估等待时间易误判为卡顿），
+// 改用阶段清单 + 当前激活项旋转图标，给用户"系统在分步思考"的连续感受。
 const stageTexts = [
-  '正在解析合同文本...',
-  '识别合同主体与关键条款...',
-  '比对法律法规与风险规则库...',
-  '评估条款风险等级...',
-  '生成审查报告与修改建议...'
+  '正在解析合同文本',
+  '识别合同主体与关键条款',
+  '比对法律法规与风险规则库',
+  '评估条款风险等级',
+  '生成审查报告与修改建议'
 ]
+const currentStageIdx = ref(0)
+let stageTimer = null
 
-// 分析过程定时器引用
-let analyzeTimer = null
+/** 统一清理定时器 */
+const clearTimers = () => {
+  if (stageTimer) {
+    clearInterval(stageTimer)
+    stageTimer = null
+  }
+}
+
+onBeforeUnmount(clearTimers)
 
 /**
  * 文件选择回调：上传到后端提取文本，然后开始审查
@@ -104,30 +114,23 @@ const handleFileChange = async (uploadFile) => {
 }
 
 /**
- * 开始审查：播放进度动画，进度满后调用后端审查接口
+ * 开始审查：进入 analyzing 阶段，启动阶段骨架提示，立即调用审查接口
+ *
+ * 阶段切换：每 2 秒推进一项（5 项 ≈ 10 秒，覆盖常见 5-15s 审查时间），
+ * 真实 API 一旦返回立刻跳到报告页，避免"100% 后卡住"的负面体验。
  */
 const startAnalyze = () => {
   phase.value = 'analyzing'
-  analyzeProgress.value = 0
-  analyzeStage.value = stageTexts[0]
-  clearInterval(analyzeTimer)
+  currentStageIdx.value = 0
+  clearTimers()
 
-  analyzeTimer = setInterval(() => {
-    analyzeProgress.value += Math.floor(Math.random() * 8) + 4
-
-    const idx = Math.min(
-      stageTexts.length - 1,
-      Math.floor((analyzeProgress.value / 100) * stageTexts.length)
-    )
-    analyzeStage.value = stageTexts[idx]
-
-    if (analyzeProgress.value >= 100) {
-      analyzeProgress.value = 100
-      clearInterval(analyzeTimer)
-      // 进度满后调用后端审查接口
-      callBackendReview()
+  stageTimer = setInterval(() => {
+    if (currentStageIdx.value < stageTexts.length - 1) {
+      currentStageIdx.value++
     }
-  }, 180)
+  }, 2000)
+
+  callBackendReview()
 }
 
 /**
@@ -144,12 +147,14 @@ const callBackendReview = async () => {
       report.risks = result.risks || []
       report.passed = result.passed || []
     }
-    // 稍作停顿后展示报告
+    // 稍作停顿后展示报告（让最后一个阶段动画播放完成）
     setTimeout(() => {
       phase.value = 'report'
     }, 300)
   } catch {
     phase.value = 'upload'
+  } finally {
+    clearTimers()
   }
 }
 
@@ -173,20 +178,72 @@ const getScoreColor = (score) => {
 }
 
 /**
- * 下载报告：演示环境仅给出提示
+ * 下载完整报告：从后端生成 .docx 文件并触发浏览器下载
+ *
+ * 流程：调用 downloadContractReport(contractId) 拿 Blob ->
+ * 从响应头 Content-Disposition 解析文件名（兼容中文）->
+ * 用 a[download] 触发浏览器下载
  */
-const handleDownloadReport = () => {
-  ElMessage.success('正式环境将在此处下载审查报告（Word/PDF）')
+const handleDownloadReport = async () => {
+  if (!contractId.value) {
+    ElMessage.warning('暂无审查结果可下载')
+    return
+  }
+  if (downloading.value) return // 防重复点击
+  downloading.value = true
+  const loading = ElMessage.info({ message: '正在生成报告...', duration: 0 })
+  try {
+    // 直接拿 Blob（http.js 已对 responseType=blob 做短路）
+    const blob = await downloadContractReport(contractId.value)
+    if (!(blob instanceof Blob)) {
+      ElMessage.error('返回数据格式异常，请稍后重试')
+      return
+    }
+
+    // 从 Content-Disposition 头解析文件名（后端返回 RFC 5987 编码的中文名）
+    const dispo = (blob && blob._responseHeaders?.['content-disposition']) || ''
+    const utf8Match = dispo.match(/filename\*=UTF-8''([^;]+)/i)
+    let filename = '合同审查报告.docx'
+    if (utf8Match) {
+      try {
+        filename = decodeURIComponent(utf8Match[1])
+      } catch {
+        // 解析失败就用默认名
+      }
+    } else {
+      const asciiMatch = dispo.match(/filename="([^"]+)"/i)
+      if (asciiMatch) filename = asciiMatch[1]
+    }
+
+    // 创建临时链接并触发下载
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    // 立即释放 URL，避免内存泄漏
+    setTimeout(() => URL.revokeObjectURL(url), 100)
+
+    ElMessage.success(`报告已下载：${filename}`)
+  } catch (err) {
+    // 错误已在 http.js 拦截器中提示
+    console.error('下载报告失败：', err)
+  } finally {
+    loading.close()
+    downloading.value = false
+  }
 }
 
 /**
  * 重新审查：清空文件并回到上传状态
  */
 const resetAll = () => {
-  clearInterval(analyzeTimer)
+  clearTimers()
   fileName.value = ''
   contractId.value = null
-  analyzeProgress.value = 0
+  currentStageIdx.value = 0
   phase.value = 'upload'
 }
 </script>
@@ -209,7 +266,7 @@ const resetAll = () => {
           drag
           :auto-upload="false"
           :show-file-list="false"
-          accept=".doc,.docx,.pdf,.txt,.wps"
+          accept=".doc,.docx,.pdf,.txt,.wps,.text"
           :on-change="handleFileChange"
           class="upload-dragger"
         >
@@ -239,22 +296,53 @@ const resetAll = () => {
         </div>
 
         <!-- 示例提示 -->
-        <p class="upload-tip">演示说明：上传任意符合格式的文件即可查看模拟审查报告</p>
+        <p class="upload-tip">上传合同文件，AI 将逐条识别风险条款并提供修改建议</p>
       </div>
 
-      <!-- ========== 阶段二：分析中 ========== -->
+      <!-- ========== 阶段二：分析中（阶段骨架提示） ========== -->
       <div v-else-if="phase === 'analyzing'" class="analyzing-card">
-        <el-icon :size="46" color="#c9a96e" class="analyzing-icon">
-          <DocumentChecked />
-        </el-icon>
+        <div class="analyzing-spinner">
+          <div class="analyzing-spinner-ring"></div>
+          <el-icon :size="40" color="#c9a96e">
+            <DocumentChecked />
+          </el-icon>
+        </div>
         <h2 class="analyzing-title">正在审查《{{ fileName }}》</h2>
-        <el-progress
-          :percentage="analyzeProgress"
-          :stroke-width="12"
-          color="#c9a96e"
-          class="analyzing-bar"
-        />
-        <p class="analyzing-stage">{{ analyzeStage }}</p>
+
+        <!-- 阶段清单：已完成 / 进行中 / 待办 三态 -->
+        <div class="analyzing-stages">
+          <div
+            v-for="(stage, idx) in stageTexts"
+            :key="idx"
+            class="stage-item"
+            :class="{
+              'stage-item--done': idx < currentStageIdx,
+              'stage-item--active': idx === currentStageIdx,
+              'stage-item--pending': idx > currentStageIdx
+            }"
+          >
+            <span class="stage-item__icon-wrap">
+              <el-icon
+                v-if="idx < currentStageIdx"
+                class="stage-item__icon"
+                color="#52a86b"
+              >
+                <CircleCheckFilled />
+              </el-icon>
+              <el-icon
+                v-else-if="idx === currentStageIdx"
+                class="stage-item__icon stage-item__icon--loading"
+                color="#c9a96e"
+              >
+                <Loading />
+              </el-icon>
+              <span v-else class="stage-item__dot"></span>
+            </span>
+            <span class="stage-item__text">{{ stage }}</span>
+          </div>
+        </div>
+
+        <p class="analyzing-extra">复杂合同审查约需 5-20 秒，请耐心等候</p>
       </div>
 
       <!-- ========== 阶段三：审查报告 ========== -->
@@ -342,25 +430,42 @@ const resetAll = () => {
             </p>
             <p class="risk-suggestion">{{ risk.suggestion }}</p>
           </div>
-        </div>
 
-        <!-- 合规条款（正向反馈） -->
-        <h2 class="block-title block-title--pass">
-          <el-icon color="#52a86b"><CircleCheckFilled /></el-icon>
-          合规条款
-        </h2>
-        <div class="passed-card">
-          <div v-for="(item, index) in report.passed" :key="index" class="passed-item">
-            <el-icon color="#52a86b"><CircleCheckFilled /></el-icon>
-            <span>{{ item }}</span>
+          <!-- 法律依据 -->
+          <div v-if="risk.law" class="risk-block">
+            <p class="risk-block__label">
+              <el-icon><InfoFilled /></el-icon>
+              法律依据
+            </p>
+            <p class="risk-law">{{ risk.law }}</p>
           </div>
         </div>
+
+        <!-- 合规条款（正向反馈，有内容时才显示） -->
+        <template v-if="report.passed && report.passed.length">
+          <h2 class="block-title block-title--pass">
+            <el-icon color="#52a86b"><CircleCheckFilled /></el-icon>
+            合规条款
+          </h2>
+          <div class="passed-card">
+            <div v-for="(item, index) in report.passed" :key="index" class="passed-item">
+              <el-icon color="#52a86b"><CircleCheckFilled /></el-icon>
+              <span>{{ item }}</span>
+            </div>
+          </div>
+        </template>
 
         <!-- 报告操作按钮 -->
         <div class="report-actions">
           <el-button :icon="RefreshLeft" @click="resetAll">重新审查</el-button>
-          <el-button type="primary" class="gold-btn" :icon="Download" @click="handleDownloadReport">
-            下载完整报告
+          <el-button
+            type="primary"
+            class="gold-btn"
+            :icon="Download"
+            :loading="downloading"
+            @click="handleDownloadReport"
+          >
+            {{ downloading ? '生成中...' : '下载完整报告' }}
           </el-button>
         </div>
 
@@ -469,51 +574,127 @@ const resetAll = () => {
   color: #b4b9c0;
 }
 
-/* ========== 分析中卡片 ========== */
+/* ========== 分析中卡片（阶段骨架提示） ========== */
 .analyzing-card {
   background-color: #ffffff;
   border: 1px solid var(--color-border);
   border-radius: 12px;
-  padding: 64px 40px;
+  padding: 56px 40px;
   text-align: center;
   box-shadow: 0 6px 20px rgba(26, 58, 92, 0.06);
 }
 
-/* 文档图标轻微呼吸动画 */
-.analyzing-icon {
-  animation: pulse 1.6s ease-in-out infinite;
+/* 双层环形旋转图标：外圈旋转 + 中心静态图标 */
+.analyzing-spinner {
+  position: relative;
+  width: 72px;
+  height: 72px;
+  margin: 0 auto 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
-@keyframes pulse {
-  0%,
-  100% {
-    opacity: 0.6;
-    transform: scale(1);
-  }
-  50% {
-    opacity: 1;
-    transform: scale(1.08);
-  }
+.analyzing-spinner-ring {
+  position: absolute;
+  inset: 0;
+  border: 3px solid transparent;
+  border-top-color: #c9a96e;
+  border-right-color: rgba(201, 169, 110, 0.5);
+  border-radius: 50%;
+  animation: spin 1.2s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 
 .analyzing-title {
-  margin: 22px 0 28px;
+  margin: 0 0 28px;
   font-size: 17px;
   color: var(--color-primary);
   /* 文件名过长时省略 */
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  max-width: 580px;
+  margin-left: auto;
+  margin-right: auto;
 }
 
-.analyzing-bar {
-  max-width: 460px;
+/* 阶段清单 */
+.analyzing-stages {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-width: 400px;
   margin: 0 auto;
+  padding: 22px 26px;
+  background-color: #fcfbf7;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  text-align: left;
 }
 
-.analyzing-stage {
-  margin-top: 16px;
-  font-size: 13px;
+.stage-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  transition: opacity 0.3s ease, color 0.3s ease;
+}
+
+/* 待办阶段：置灰、降低存在感 */
+.stage-item--pending {
+  opacity: 0.45;
+}
+
+/* 进行中：加粗、强调颜色 */
+.stage-item--active .stage-item__text {
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+/* 已完成：默认绿色对勾 */
+.stage-item__icon {
+  font-size: 18px;
+}
+
+/* 进行中图标：旋转动画 */
+.stage-item__icon--loading {
+  animation: spin 1.4s linear infinite;
+}
+
+/* 待办阶段的小圆点占位 */
+.stage-item__icon-wrap {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.stage-item__dot {
+  width: 8px;
+  height: 8px;
+  background-color: #c8d3de;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.stage-item__text {
+  font-size: 14px;
+  color: var(--color-text-main);
+}
+
+.stage-item--pending .stage-item__text {
+  color: #909399;
+}
+
+.analyzing-extra {
+  margin-top: 22px;
+  font-size: 12px;
   color: var(--color-text-secondary);
 }
 
@@ -704,6 +885,17 @@ const resetAll = () => {
   color: #2f6b43;
   background-color: rgba(82, 168, 107, 0.08);
   border-left: 3px solid #52a86b;
+  border-radius: 0 6px 6px 0;
+  padding: 10px 14px;
+}
+
+/* 法律依据：浅蓝底色 */
+.risk-law {
+  font-size: 13px;
+  line-height: 1.8;
+  color: #3a6b9f;
+  background-color: rgba(58, 107, 159, 0.06);
+  border-left: 3px solid #3a6b9f;
   border-radius: 0 6px 6px 0;
   padding: 10px 14px;
 }

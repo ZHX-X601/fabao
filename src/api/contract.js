@@ -24,3 +24,12 @@ export function reviewContract(id) {
 export function getContractList() {
   return http.get('/contracts/list')
 }
+
+/**
+ * 下载合同审查报告（返回 Blob）
+ * 后端会从 Content-Disposition 头里返回带中文的原始文件名
+ * @param {number} id 合同记录 ID
+ */
+export function downloadContractReport(id) {
+  return http.get(`/contracts/report/${id}`, { responseType: 'blob' })
+}

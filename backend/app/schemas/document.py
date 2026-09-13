@@ -7,8 +7,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-# 支持的文书类型（与前端 DocGenerate 页面的选项保持一致）
-DOC_TYPES = ["借款合同", "劳动合同", "租赁合同", "民事起诉状"]
+# 支持的文书类型（与 FastGPT 文书生成应用的提示词保持一致）
+DOC_TYPES = ["民事起诉状", "民事答辩状", "律师函", "授权委托书"]
 
 
 class DocumentGenerateRequest(BaseModel):

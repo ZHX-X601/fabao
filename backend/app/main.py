@@ -51,6 +51,8 @@ async def lifespan(app: FastAPI):
     # 确保上传目录存在（首次运行时创建）
     Path(settings.UPLOAD_PATH).mkdir(parents=True, exist_ok=True)
     logger.info("应用启动完成：%s", settings.APP_NAME)
+    # 打印实际生效的跨域白名单，便于排查线上域名被拦截的问题
+    logger.info("CORS 允许来源：%s", settings.CORS_ORIGINS)
     yield
     logger.info("应用已关闭")
 
